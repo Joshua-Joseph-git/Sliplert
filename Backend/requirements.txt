@@ -1,0 +1,12 @@
+fastapi==0.115.0
+uvicorn[standard]==0.32.0
+opencv-python==4.10.0.84
+mediapipe==0.10.14
+numpy==1.26.4
+twilio==8.13.0
+python-multipart==0.0.12
+pydantic==2.9.2
+pydantic-settings==2.6.0
+gpiozero==2.0.1
+adafruit-circuitpython-vl53l0x
+adafruit-blinka
