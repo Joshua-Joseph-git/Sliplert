@@ -7,7 +7,7 @@ export async function POST(request: NextRequest) {
     // Try to connect to backend
     let response;
     try {
-      response = await fetch('http://localhost:8000/detect-fall-base64', {
+      response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000'}/detect-fall-base64`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

@@ -12,7 +12,16 @@ import base64
 from pathlib import Path
 import sys
 import os
+import threading
+import time
+from contextlib import asynccontextmanager
 #DEVIN HELP FOR WHICH API'S I USED
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 try:
     from gpiozero import Robot, DistanceSensor
     GPIO_AVAILABLE = True
@@ -20,10 +29,31 @@ except ImportError:
     GPIO_AVAILABLE = False
     print("GPIO not available - running in simulation mode")
 
-SENSOR_TYPE = os.getenv("SENSOR_TYPE", "HC-SR04")
-vl53l0x_sensor = None
+try:
+    from twilio.rest import Client as TwilioClient
+except ImportError:
+    TwilioClient = None
 
-app = FastAPI(title="SlipLert Backend")
+SENSOR_TYPE = os.getenv("SENSOR_TYPE", "NONE")
+vl53l0x_sensor = None
+stop_event = threading.Event()
+
+
+@asynccontextmanager
+async def lifespan(app):
+    load_contacts_from_file()
+    load_fall_history_from_file()
+    if os.getenv("ROBOT_CAMERA", "on" if GPIO_AVAILABLE else "off").lower() == "on":
+        threading.Thread(target=robot_camera_loop, daemon=True).start()
+    else:
+        print("Robot camera loop off (set ROBOT_CAMERA=on to enable)")
+    yield
+    stop_event.set()
+    if robot:
+        robot.stop()
+
+
+app = FastAPI(title="SlipLert Backend", lifespan=lifespan)
 
 # CORS middleware
 app.add_middleware(
@@ -60,7 +90,10 @@ distance_sensors = {}
 
 if GPIO_AVAILABLE:
     try:
-        robot = Robot(left=(17, 18), right=(22, 23))
+        robot = Robot(
+            left=(int(os.getenv("ROBOT_LEFT_FORWARD_PIN", 17)), int(os.getenv("ROBOT_LEFT_BACKWARD_PIN", 18))),
+            right=(int(os.getenv("ROBOT_RIGHT_FORWARD_PIN", 22)), int(os.getenv("ROBOT_RIGHT_BACKWARD_PIN", 23)))
+        )
         print("Robot GPIO initialized")
     except Exception as e:
         print(f"Robot GPIO initialization failed (not on Raspberry Pi): {e}")
@@ -74,7 +107,7 @@ if GPIO_AVAILABLE:
             )
             distance_sensors['left'] = DistanceSensor(
                 echo=int(os.getenv("SENSOR_LEFT_ECHO", 27)),
-                trigger=int(os.getenv("SENSOR_LEFT_TRIGGER", 23))
+                trigger=int(os.getenv("SENSOR_LEFT_TRIGGER", 16))
             )
             distance_sensors['right'] = DistanceSensor(
                 echo=int(os.getenv("SENSOR_RIGHT_ECHO", 20)),
@@ -149,6 +182,7 @@ class FallDetector:
             # Fall detection logic
             is_fall = False
             fall_type = None
+            ankles_visible = left_ankle.visibility > 0.5 and right_ankle.visibility > 0.5
 
             # Check 1: Body is horizontal (fallen)
             if body_angle > 60:  # More than 60 degrees from vertical
@@ -156,12 +190,12 @@ class FallDetector:
                 fall_type = "horizontal"
 
             # Check 2: Fast downward movement
-            elif velocity > self.velocity_threshold and vertical_alignment < self.fall_threshold:
+            elif ankles_visible and velocity > self.velocity_threshold and vertical_alignment < self.fall_threshold:
                 is_fall = True
                 fall_type = "fast_fall"
 
             # Check 3: Sudden change in vertical alignment
-            elif len(self.previous_positions) >= 5:
+            elif ankles_visible and len(self.previous_positions) >= 5:
                 recent_alignment = [p["vertical_alignment"] for p in self.previous_positions[-5:]]
                 if max(recent_alignment) - min(recent_alignment) > 0.5:
                     is_fall = True
@@ -196,7 +230,7 @@ class FallDetector:
         """Calculate the angle of the body from vertical (0 = upright, 90 = horizontal)"""
         dx = shoulder["x"] - hip["x"]
         dy = shoulder["y"] - hip["y"]
-        angle = abs(np.degrees(np.arctan2(dx, dy)))
+        angle = np.degrees(np.arctan2(abs(dx), abs(dy)))
         return angle
 
     def _calculate_velocity(self):
@@ -215,6 +249,113 @@ class FallDetector:
         return velocity
 
 fall_detector = FallDetector()
+
+from autonomous_controller import AutonomousController
+
+follower = AutonomousController(robot=robot, distance_sensors=distance_sensors, create_hardware=False)
+camera_state = {"running": False, "person_detected": False, "fps": 0.0, "last_fall": None}
+latest_jpeg = None
+frame_lock = threading.Lock()
+TORSO_LANDMARKS = [
+    mp_pose.PoseLandmark.LEFT_SHOULDER,
+    mp_pose.PoseLandmark.RIGHT_SHOULDER,
+    mp_pose.PoseLandmark.LEFT_HIP,
+    mp_pose.PoseLandmark.RIGHT_HIP,
+]
+
+
+def open_camera():
+    try:
+        from picamera2 import Picamera2
+        picam = Picamera2()
+        picam.configure(picam.create_preview_configuration(main={"size": (640, 480), "format": "RGB888"}))
+        picam.start()
+        print("Using Raspberry Pi camera (picamera2)")
+        return picam.capture_array, picam.stop
+    except Exception as e:
+        print(f"picamera2 not available ({e}) - trying USB/OpenCV camera")
+
+    cap = cv2.VideoCapture(int(os.getenv("CAMERA_INDEX", 0)))
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    if not cap.isOpened():
+        return None, None
+    print("Using OpenCV camera")
+    return (lambda: cap.read()[1]), cap.release
+
+
+def robot_camera_loop():
+    global latest_jpeg
+    read_frame, release = open_camera()
+    if not read_frame:
+        print("No camera found - robot camera loop not started")
+        return
+
+    loop_pose = mp_pose.Pose(
+        static_image_mode=False,
+        model_complexity=int(os.getenv("POSE_MODEL_COMPLEXITY", 0)),
+        min_detection_confidence=0.5,
+        min_tracking_confidence=0.5
+    )
+    loop_detector = FallDetector()
+    drawer = mp.solutions.drawing_utils
+    confirm_frames = int(os.getenv("FALL_CONFIRM_FRAMES", 3))
+    fall_streak = 0
+    last_tick = time.time()
+    camera_state["running"] = True
+    print("Robot camera loop running")
+
+    try:
+        while not stop_event.is_set():
+            frame = read_frame()
+            if frame is None:
+                time.sleep(0.05)
+                continue
+
+            results = loop_pose.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+            landmarks = results.pose_landmarks.landmark if results.pose_landmarks else None
+            visible = landmarks is not None and all(landmarks[i].visibility > 0.5 for i in TORSO_LANDMARKS)
+            camera_state["person_detected"] = visible
+
+            if visible:
+                analysis = loop_detector.analyze_pose(landmarks)
+                fall_streak = fall_streak + 1 if analysis.get("is_fall") else 0
+                if fall_streak >= confirm_frames:
+                    fall_streak = 0
+                    record = {
+                        "timestamp": datetime.now().isoformat(),
+                        "fall_type": analysis["fall_type"],
+                        "body_angle": analysis["body_angle"],
+                        "confidence": analysis["confidence"],
+                        "source": "robot_camera"
+                    }
+                    if send_emergency_alert(record):
+                        fall_history.append(record)
+                        save_fall_history_to_file()
+                        camera_state["last_fall"] = record
+                elif is_autonomous:
+                    follower.is_running = True
+                    follower.follow_landmarks(landmarks)
+            elif is_autonomous:
+                follower.lose_person()
+
+            if not is_autonomous and follower.is_running:
+                follower.stop()
+
+            if results.pose_landmarks:
+                drawer.draw_landmarks(frame, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+            ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+            if ok:
+                with frame_lock:
+                    latest_jpeg = buf.tobytes()
+
+            now = time.time()
+            camera_state["fps"] = round(1 / (now - last_tick), 1) if now > last_tick else 0.0
+            last_tick = now
+    finally:
+        camera_state["running"] = False
+        follower.stop()
+        release()
 
 def load_contacts_from_file():
     global emergency_contacts
@@ -384,7 +525,7 @@ async def add_emergency_contact(contact: dict):
         if field not in contact:
             raise HTTPException(status_code=400, detail=f"Missing required field: {field}")
 
-    contact["id"] = len(emergency_contacts) + 1
+    contact["id"] = max((c["id"] for c in emergency_contacts), default=0) + 1
     contact["created_at"] = datetime.now().isoformat()
     emergency_contacts.append(contact)
     save_contacts_to_file()
@@ -404,20 +545,59 @@ async def delete_emergency_contact(contact_id: int):
     save_contacts_to_file()
     return {"message": "Contact deleted successfully"}
 
-async def trigger_emergency_alert(fall_record: dict):
-    """Trigger emergency alert - call all contacts"""
+ALERT_COOLDOWN_SECONDS = float(os.getenv("ALERT_COOLDOWN_SECONDS", 60))
+last_alert_time = 0.0
+alert_lock = threading.Lock()
+
+
+def get_twilio_client():
+    sid = os.getenv("TWILIO_ACCOUNT_SID", "")
+    token = os.getenv("TWILIO_AUTH_TOKEN", "")
+    if TwilioClient and sid.startswith("AC") and token and os.getenv("TWILIO_PHONE_NUMBER"):
+        return TwilioClient(sid, token)
+    return None
+
+
+def send_emergency_alert(fall_record: dict) -> bool:
+    global last_alert_time, is_autonomous
+    with alert_lock:
+        now = time.time()
+        if now - last_alert_time < ALERT_COOLDOWN_SECONDS:
+            return False
+        last_alert_time = now
+
     print(f"🚨 EMERGENCY ALERT: Fall detected at {fall_record['timestamp']}")
     print(f"Fall type: {fall_record['fall_type']}")
     print(f"Body angle: {fall_record['body_angle']:.2f}°")
 
-    # In production, integrate with Twilio or other calling service here
-    # For now, we'll log the contacts that would be called
-    for contact in emergency_contacts:
-        print(f"📞 Would call: {contact['name']} ({contact['phone']}) - {contact['relationship']}")
+    is_autonomous = False
+    follower.stop()
 
-    # Stop robot if it's moving
-    if robot:
-        robot.stop()
+    client = get_twilio_client()
+    from_number = os.getenv("TWILIO_PHONE_NUMBER")
+    message = "This is SlipLert. A fall has been detected. Please check on your loved one immediately."
+    if not emergency_contacts:
+        print("No emergency contacts saved - nobody to call")
+    for contact in emergency_contacts:
+        if not client:
+            print(f"📞 Would call (Twilio not configured): {contact['name']} ({contact['phone']})")
+            continue
+        try:
+            client.calls.create(
+                to=contact["phone"],
+                from_=from_number,
+                twiml=f'<Response><Say loop="2">{message}</Say></Response>'
+            )
+            client.messages.create(to=contact["phone"], from_=from_number, body=f"{message} Time: {fall_record['timestamp']}")
+            print(f"📞 Called and texted {contact['name']} ({contact['phone']})")
+        except Exception as e:
+            print(f"Failed to alert {contact['name']} ({contact['phone']}): {e}")
+    return True
+
+
+async def trigger_emergency_alert(fall_record: dict):
+    """Trigger emergency alert - call all contacts"""
+    await asyncio.to_thread(send_emergency_alert, fall_record)
 
 # Robot Control
 
@@ -452,8 +632,13 @@ async def control_robot(command: dict):
 async def toggle_autonomous(settings: dict):
     """Toggle autonomous mode"""
     global is_autonomous
-    is_autonomous = settings.get("enabled", False)
-    return {"message": f"Autonomous mode {'enabled' if is_autonomous else 'disabled'}", "status": is_autonomous}
+    is_autonomous = bool(settings.get("enabled", False))
+    if not is_autonomous:
+        follower.stop()
+    message = f"Autonomous mode {'enabled' if is_autonomous else 'disabled'}"
+    if is_autonomous and not camera_state["running"]:
+        message += " (warning: robot camera is not running)"
+    return {"message": message, "status": is_autonomous}
 
 @app.get("/robot/status")
 async def get_robot_status():
@@ -461,8 +646,25 @@ async def get_robot_status():
     return {
         "position": robot_position,
         "autonomous": is_autonomous,
-        "gpio_available": GPIO_AVAILABLE
+        "gpio_available": GPIO_AVAILABLE,
+        "camera_running": camera_state["running"],
+        "person_detected": camera_state["person_detected"],
+        "person_position": follower.get_person_position(),
+        "fps": camera_state["fps"],
+        "last_fall": camera_state["last_fall"],
+        "twilio_configured": get_twilio_client() is not None
     }
+
+@app.get("/video_feed")
+async def video_feed():
+    async def frames():
+        while True:
+            with frame_lock:
+                jpg = latest_jpeg
+            if jpg:
+                yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + jpg + b"\r\n"
+            await asyncio.sleep(0.1)
+    return StreamingResponse(frames(), media_type="multipart/x-mixed-replace; boundary=frame")
 
 # WebSocket for real-time video streaming and fall detection
 

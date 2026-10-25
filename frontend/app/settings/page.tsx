@@ -2,6 +2,8 @@
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
 
+const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+
 type EmergencyContact = {
   id: number;
   name: string;
@@ -24,7 +26,7 @@ export default function Settings() {
 
   const loadContacts = async () => {
     try {
-      const response = await fetch('http://localhost:8000/emergency-contacts');
+      const response = await fetch(`${BACKEND_URL}/emergency-contacts`);
       if (!response.ok) {
         console.error('Backend response not OK:', response.status);
         return;
@@ -33,7 +35,7 @@ export default function Settings() {
       setContacts(data.contacts || []);
     } catch (error) {
       console.error('Failed to load contacts:', error);
-      alert('Failed to connect to backend. Make sure the backend is running on http://localhost:8000');
+      alert(`Failed to connect to backend. Make sure the backend is running on ${BACKEND_URL}`);
     }
   };
 
@@ -44,7 +46,7 @@ export default function Settings() {
     }
 
     try {
-      const response = await fetch('http://localhost:8000/emergency-contacts', {
+      const response = await fetch(`${BACKEND_URL}/emergency-contacts`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(newContact),
@@ -62,7 +64,7 @@ export default function Settings() {
       }
     } catch (error) {
       console.error('Failed to add contact:', error);
-      alert('Failed to connect to backend. Make sure the backend is running on http://localhost:8000');
+      alert(`Failed to connect to backend. Make sure the backend is running on ${BACKEND_URL}`);
     }
   };
 
@@ -70,7 +72,7 @@ export default function Settings() {
     if (!confirm('Are you sure you want to delete this contact?')) return;
 
     try {
-      const response = await fetch(`http://localhost:8000/emergency-contacts/${id}`, {
+      const response = await fetch(`${BACKEND_URL}/emergency-contacts/${id}`, {
         method: 'DELETE',
       });
 
@@ -83,7 +85,7 @@ export default function Settings() {
       }
     } catch (error) {
       console.error('Failed to delete contact:', error);
-      alert('Failed to connect to backend. Make sure the backend is running on http://localhost:8000');
+      alert(`Failed to connect to backend. Make sure the backend is running on ${BACKEND_URL}`);
     }
   };
 

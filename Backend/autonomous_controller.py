@@ -2,6 +2,7 @@ import cv2
 #This code is helped with Devin, the code was hard to decode and what modules/imports to use were confusing and how to properly font this. 
 import numpy as np
 import mediapipe as mp
+import os
 import time
 from typing import Tuple, Optional
 import math
@@ -17,7 +18,7 @@ except ImportError:
 class AutonomousController:
     """Autonomous robot controller that follows a person using MediaPipe pose detection"""
 
-    def __init__(self):
+    def __init__(self, robot=None, distance_sensors=None, create_hardware=True):
         # MediaPipe Pose initialization
         self.mp_pose = mp.solutions.pose
         self.pose = self.mp_pose.Pose(
@@ -29,24 +30,26 @@ class AutonomousController:
         )
 
         # Robot initialization
-        self.robot = None
-        self.distance_sensors = {}
-        if GPIO_AVAILABLE:
-            self.robot = Robot(left=(17, 18), right=(22, 23))
-            # Add distance sensors if available
+        self.robot = robot
+        self.distance_sensors = distance_sensors or {}
+        if create_hardware and robot is None and GPIO_AVAILABLE:
             try:
-                self.distance_sensors['front'] = DistanceSensor(echo=24, trigger=25)
-                self.distance_sensors['left'] = DistanceSensor(echo=27, trigger=23)
-                self.distance_sensors['right'] = DistanceSensor(echo=20, trigger=21)
-            except:
-                print("Distance sensors not available")
+                self.robot = Robot(left=(17, 18), right=(22, 23))
+            except Exception as e:
+                print(f"Robot GPIO initialization failed: {e}")
+            if os.getenv("SENSOR_TYPE", "NONE") == "HC-SR04":
+                # Add distance sensors if available
+                try:
+                    self.distance_sensors['front'] = DistanceSensor(echo=24, trigger=25)
+                except Exception:
+                    print("Distance sensors not available")
 
         # Control parameters
-        self.target_distance = 150  # cm - desired distance from person
-        self.min_distance = 30  # cm - minimum safe distance
-        self.max_distance = 200  # cm - maximum distance to track
-        self.follow_speed = 0.7  # Speed when following
-        self.turn_speed = 0.4  # Speed when turning, slower turns, what to make sure that the car can follow people
+        self.target_distance = float(os.getenv("FOLLOW_TARGET_CM", 120))  # cm - desired distance from person
+        self.min_distance = float(os.getenv("FOLLOW_MIN_CM", 60))  # cm - minimum safe distance
+        self.max_distance = 400  # cm - maximum distance to track
+        self.follow_speed = float(os.getenv("FOLLOW_SPEED", 0.5))  # Speed when following
+        self.turn_speed = float(os.getenv("TURN_SPEED", 0.35))  # Speed when turning, slower turns, what to make sure that the car can follow people
 
         # State tracking
         self.is_running = False
@@ -87,42 +90,50 @@ class AutonomousController:
         results = self.pose.process(frame_rgb)
 
         if results.pose_landmarks:
-            # Extract person position
-            landmarks = results.pose_landmarks.landmark
-
-            # Get torso center (midpoint of shoulders and hips)
-            left_shoulder = landmarks[self.mp_pose.PoseLandmark.LEFT_SHOULDER]
-            right_shoulder = landmarks[self.mp_pose.PoseLandmark.RIGHT_SHOULDER]
-            left_hip = landmarks[self.mp_pose.PoseLandmark.LEFT_HIP]
-            right_hip = landmarks[self.mp_pose.PoseLandmark.RIGHT_HIP]
-
-            # Calculate center of mass in image coordinates
-            center_x = (left_shoulder.x + right_shoulder.x + left_hip.x + right_hip.x) / 4
-            center_y = (left_shoulder.y + right_shoulder.y + left_hip.y + right_hip.y) / 4
-
-            # Estimate distance based on person size (shoulder width)
-            shoulder_width = abs(left_shoulder.x - right_shoulder.x)
-            estimated_distance = self._estimate_distance(shoulder_width)
-
-            # Store position
-            self.person_position = {
-                "x": center_x,
-                "y": center_y,
-                "distance": estimated_distance,
-                "confidence": 0.9
-            }
-
-            # Calculate control commands
-            control_commands = self._calculate_control_commands(center_x, estimated_distance)
-
-            # Execute commands
-            self._execute_commands(control_commands)
-
-            return True, control_commands
+            commands = self.follow_landmarks(results.pose_landmarks.landmark)
+            return True, commands
         else:
-            # Person not detected - stop or search
-            self.person_position = None
+            self.lose_person()
             return False, {"action": "stop"}
+
+    def lose_person(self):
+        self.person_position = None
+        if self.robot:
+            self.robot.stop()
+
+    def follow_landmarks(self, landmarks) -> dict:
+        if not self.is_running:
+            return {"action": "stop"}
+
+        # Get torso center (midpoint of shoulders and hips)
+        left_shoulder = landmarks[self.mp_pose.PoseLandmark.LEFT_SHOULDER]
+        right_shoulder = landmarks[self.mp_pose.PoseLandmark.RIGHT_SHOULDER]
+        left_hip = landmarks[self.mp_pose.PoseLandmark.LEFT_HIP]
+        right_hip = landmarks[self.mp_pose.PoseLandmark.RIGHT_HIP]
+
+        # Calculate center of mass in image coordinates
+        center_x = (left_shoulder.x + right_shoulder.x + left_hip.x + right_hip.x) / 4
+        center_y = (left_shoulder.y + right_shoulder.y + left_hip.y + right_hip.y) / 4
+
+        # Estimate distance based on person size (shoulder width)
+        shoulder_width = abs(left_shoulder.x - right_shoulder.x)
+        estimated_distance = self._estimate_distance(shoulder_width)
+
+        # Store position
+        self.person_position = {
+            "x": center_x,
+            "y": center_y,
+            "distance": estimated_distance,
+            "confidence": 0.9
+        }
+
+        # Calculate control commands
+        control_commands = self._calculate_control_commands(center_x, estimated_distance)
+
+        # Execute commands
+        self._execute_commands(control_commands)
+
+        return control_commands
 
     def _estimate_distance(self, shoulder_width: float) -> float:
         """
@@ -167,7 +178,7 @@ class AutonomousController:
         horizontal_offset = center_x - 0.5  # -0.5 to 0.5
 
         # Distance control
-        if distance > self.max_distance:
+        if distance > self.target_distance:
             # Person too far - move forward
             commands["action"] = "forward"
             commands["speed"] = self.follow_speed
@@ -233,7 +244,12 @@ class AutonomousController:
         action = commands.get("action")
 
         if action == "forward":
-            self.robot.forward(speed=commands.get("speed", self.follow_speed))
+            turn = commands.get("turn", 0)
+            self.robot.forward(
+                speed=commands.get("speed", self.follow_speed),
+                curve_left=min(turn * 2, 1) if turn > 0 else 0,
+                curve_right=min(-turn * 2, 1) if turn < 0 else 0
+            )
         elif action == "backward":
             self.robot.backward(speed=commands.get("speed", self.follow_speed * 0.5))
         elif action == "left":

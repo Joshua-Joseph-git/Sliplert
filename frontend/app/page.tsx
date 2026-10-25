@@ -2,6 +2,8 @@
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
 
+const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+
 type EmergencyContact = {
   id: number;
   name: string;
@@ -25,7 +27,7 @@ export default function Home() {
 
   const loadContacts = async () => {
     try {
-      const response = await fetch('http://localhost:8000/emergency-contacts');
+      const response = await fetch(`${BACKEND_URL}/emergency-contacts`);
       if (!response.ok) return;
       const data = await response.json();
       setContacts(data.contacts || []);
@@ -41,7 +43,7 @@ export default function Home() {
     }
 
     try {
-      const response = await fetch('http://localhost:8000/emergency-contacts', {
+      const response = await fetch(`${BACKEND_URL}/emergency-contacts`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(newContact),
@@ -66,7 +68,7 @@ export default function Home() {
     if (!confirm('Delete this contact?')) return;
 
     try {
-      const response = await fetch(`http://localhost:8000/emergency-contacts/${id}`, {
+      const response = await fetch(`${BACKEND_URL}/emergency-contacts/${id}`, {
         method: 'DELETE',
       });
 
