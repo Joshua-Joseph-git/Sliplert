@@ -12,7 +12,7 @@ import base64
 from pathlib import Path
 import sys
 import os
-
+#DEVIN HELP FOR WHICH API'S I USED
 try:
     from gpiozero import Robot, DistanceSensor
     GPIO_AVAILABLE = True
@@ -59,9 +59,14 @@ robot = None
 distance_sensors = {}
 
 if GPIO_AVAILABLE:
-    robot = Robot(left=(17, 18), right=(22, 23))
+    try:
+        robot = Robot(left=(17, 18), right=(22, 23))
+        print("Robot GPIO initialized")
+    except Exception as e:
+        print(f"Robot GPIO initialization failed (not on Raspberry Pi): {e}")
+        GPIO_AVAILABLE = False
 
-    if SENSOR_TYPE == "HC-SR04":
+    if GPIO_AVAILABLE and SENSOR_TYPE == "HC-SR04":
         try:
             distance_sensors['front'] = DistanceSensor(
                 echo=int(os.getenv("SENSOR_FRONT_ECHO", 24)),
@@ -79,7 +84,7 @@ if GPIO_AVAILABLE:
         except Exception as e:
             print(f"HC-SR04 sensor initialization failed: {e}")
 
-    elif SENSOR_TYPE == "VL53L0X":
+    elif GPIO_AVAILABLE and SENSOR_TYPE == "VL53L0X":
         try:
             import board
             import busio

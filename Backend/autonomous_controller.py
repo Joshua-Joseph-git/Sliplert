@@ -1,4 +1,5 @@
 import cv2
+#This code is helped with Devin, the code was hard to decode and what modules/imports to use were confusing and how to properly font this. 
 import numpy as np
 import mediapipe as mp
 import time
@@ -41,11 +42,11 @@ class AutonomousController:
                 print("Distance sensors not available")
 
         # Control parameters
-        self.target_distance = 100  # cm - desired distance from person
+        self.target_distance = 150  # cm - desired distance from person
         self.min_distance = 30  # cm - minimum safe distance
         self.max_distance = 200  # cm - maximum distance to track
-        self.follow_speed = 0.5  # Speed when following
-        self.turn_speed = 0.3  # Speed when turning
+        self.follow_speed = 0.7  # Speed when following
+        self.turn_speed = 0.4  # Speed when turning, slower turns, what to make sure that the car can follow people
 
         # State tracking
         self.is_running = False

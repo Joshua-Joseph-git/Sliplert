@@ -14,16 +14,17 @@ class RobotController:
     def __init__(self):
         self.camera = cv2.VideoCapture(0)
         self.motor_pins = {
+#PINS FOR ROBOT CAR
             'left_forward': 17,
             'left_backward': 18,
             'right_forward': 22,
             'right_backward': 23
         }
         self.is_autonomous = False
-        self.current_position = {'x': 0, 'y': 0, 'angle': 0}
+        self.current_position = {'x': 0, 'y': 0, 'angle': 0}#Axis's
         
     def start_camera(self):
-        """Initialize camera for fall detection"""
+        """Initialize camera for fall detection"""#TURN ON CAMERA
         self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
         self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
         self.camera.set(cv2.CAP_PROP_FPS, 30)
@@ -35,7 +36,7 @@ class RobotController:
             ret, jpeg = cv2.imencode('.jpg', frame)
             return jpeg.tobytes()
         return None
-        
+#SPEEDS, AND FUNCTION:STOP, BACK, RIGHT, LEFT, FORWARD
     def move_forward(self, speed=50):
         """Move robot forward"""
         # GPIO control code here
@@ -73,7 +74,7 @@ def video_feed():
                 yield (b'--frame\r\n'
                        b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
     return Response(gen(), mimetype='multipart/x-mixed-replace; boundary=frame')
-
+#fI NOT FORWARD, BACKWARD, IF NOT BACKWARD, LEFT, IF NOT LEFT, RIGHT, IF NOT LEFT STOP
 @app.route('/control/<action>')
 def control_robot(action):
     """REST API for robot control"""
