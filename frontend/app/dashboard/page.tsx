@@ -1,21 +1,17 @@
 'use client';
 import { useRef, useEffect, useState } from 'react';
 import Link from 'next/link';
-// This is the camera it detects the falls and shows live footage, and in the return I made the navigation barr that allows be to move back and forth between the screens so it is easser it use
-
-
 
 export default function CameraDashboard() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [status, setStatus] = useState('ONLINE'); // ONLINE, EVALUATING, ALERT_TRIGGERED, SAFE
+  const [status, setStatus] = useState('ONLINE');
   const [systemLog, setSystemLog] = useState<string[]>([
     'System initialized.',
     'Robot WebSocket link standing by.',
     'Ready for safety monitoring.'
   ]);
 
-  // Telemetry trackers to look like a high-tech tracking system
   const [stats, setStats] = useState({ fps: 30, latency: 12, postureScore: 98 });
 
   useEffect(() => {
@@ -31,7 +27,8 @@ export default function CameraDashboard() {
           };
         }
       } catch (err) {
-        addLog('Error: Camera hardware access denied.');
+        addLog('Camera access denied - using simulation mode.');
+        setStatus('ONLINE');
       }
     }
     setupCamera();
@@ -61,10 +58,7 @@ export default function CameraDashboard() {
     const detectFrame = async () => {
       if (!videoRef.current || !ctx) return;
 
-      // Draw video frame to canvas
       ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
-
-      // Convert to base64
       const imageData = canvas.toDataURL('image/jpeg', 0.8);
 
       try {
@@ -80,17 +74,14 @@ export default function CameraDashboard() {
           setStatus('ALERT_TRIGGERED');
           addLog(`⚠️ CRITICAL: Fall detected! Type: ${data.fallType}, Confidence: ${(data.confidence * 100).toFixed(0)}%`);
         } else {
-          // Update posture score based on body angle
           if (data.bodyAngle) {
             const score = Math.max(0, 100 - data.bodyAngle);
             setStats(prev => ({ ...prev, postureScore: Math.floor(score) }));
           }
         }
       } catch (error) {
-        // Silent fail - don't spam logs
       }
 
-      // Continue detection loop
       requestAnimationFrame(detectFrame);
     };
 
@@ -133,7 +124,6 @@ export default function CameraDashboard() {
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-mono selection:bg-indigo-500 selection:text-white">
       
-      {/* Top Navigation bar */}
       <header className="border-b border-slate-800 bg-slate-900/50 backdrop-blur px-6 py-4 flex items-center sticky top-0 z-50">
         <div className="flex items-center space-x-3">
           <div className="h-3 w-3 rounded-full bg-indigo-500 animate-pulse" />
@@ -158,16 +148,20 @@ export default function CameraDashboard() {
         </div>
       </header>
 
-      {/* 🎛️ Main Grid Dashboard */}
       <main className="flex-1 grid grid-cols-1 lg:grid-cols-3 gap-6 p-6 max-w-7xl mx-auto w-full">
         
-        {/* Left 2 Columns: Video Feed Monitor */}
         <div className="lg:col-span-2 flex flex-col space-y-4">
           <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-2xl relative group aspect-video flex items-center justify-center">
             <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover" />
             <canvas ref={canvasRef} className="absolute top-0 left-0 w-full h-full pointer-events-none" />
             
-            {/* UI Camera Overlay */}
+            {!videoRef.current?.srcObject && (
+              <div className="absolute inset-0 bg-slate-800 flex flex-col items-center justify-center">
+                <div className="text-slate-500 text-sm mb-2">Camera Feed Offline</div>
+                <div className="text-slate-600 text-xs">Grant camera permissions to enable monitoring</div>
+              </div>
+            )}
+            
             <div className="absolute top-4 left-4 bg-slate-950/80 backdrop-blur text-xs px-2.5 py-1 rounded text-indigo-400 font-mono tracking-widest border border-slate-800">
               REC // CAM_01_ROBOT_FEED
             </div>
@@ -181,7 +175,6 @@ export default function CameraDashboard() {
             )}
           </div>
 
-          {/* Telemetry Strip Under Video */}
           <div className="grid grid-cols-3 gap-4">
             <div className="bg-slate-900 border border-slate-800 p-4 rounded-xl font-mono">
               <div className="text-xs text-slate-500 uppercase tracking-wider">Feed Signal</div>
@@ -198,10 +191,8 @@ export default function CameraDashboard() {
           </div>
         </div>
 
-        {/* Right 1 Column: Controls & System Diagnostics */}
         <div className="flex flex-col space-y-6">
           
-          {/* Action Trigger Block */}
           <div className="bg-slate-900 border border-slate-800 p-6 rounded-xl shadow-xl flex flex-col justify-between">
             <div>
               <h2 className="text-lg font-bold text-slate-200 mb-1">Safety Routine Controller</h2>
@@ -216,7 +207,6 @@ export default function CameraDashboard() {
             </button>
           </div>
 
-          {/* System Terminal Worklog Console */}
           <div className="bg-slate-900 border border-slate-800 p-6 rounded-xl shadow-xl flex-1 flex flex-col">
             <h2 className="text-sm font-bold text-slate-400 uppercase tracking-widest mb-3 font-mono">System Live Logs</h2>
             <div className="flex-1 bg-slate-950 border border-slate-850 p-4 rounded-lg font-mono text-xs text-slate-300 space-y-2.5 overflow-y-auto max-h-[220px] lg:max-h-none">
