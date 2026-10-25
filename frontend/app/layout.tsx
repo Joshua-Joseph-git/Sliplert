@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
-import { Cantarell, JetBrains_Mono} from "next/font/google";
+import {Cantarell, JetBrains_Mono} from "next/font/google";
 import "./globals.css";
+
 
 const cantarell = Cantarell({
   variable: "--font-cantarell",
