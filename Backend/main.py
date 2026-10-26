@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 import cv2
 import numpy as np
-import mediapipe as mp
+import pose_utils
 import json
 import asyncio
 from typing import List, Optional
@@ -68,16 +68,7 @@ app.add_middleware(
 )
 
 # MediaPipe Pose initialization~USED FOR THE POSE DETECTION THROUGH THE CAMERA OF THE PI
-mp_pose = mp.solutions.pose
-pose = mp_pose.Pose(
-    static_image_mode=False,
-    model_complexity=1,
-    smooth_landmarks=True,
-    enable_segmentation=False,
-    smooth_segmentation=False,
-    min_detection_confidence=0.5,
-    min_tracking_confidence=0.5
-)
+pose = pose_utils.create_landmarker(video=False, complexity=1)
 
 # Global state~help from devin
 emergency_contacts = []
@@ -115,13 +106,13 @@ class FallDetector:#DECTION OF FALLS CALCULATIONS OF POSITION, THIS WAS HELPED T
         """Analyze pose landmarks to detect falls"""
         try:
             # Extract key landmarks
-            nose = landmarks[mp_pose.PoseLandmark.NOSE]
-            left_shoulder = landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER]
-            right_shoulder = landmarks[mp_pose.PoseLandmark.RIGHT_SHOULDER]
-            left_hip = landmarks[mp_pose.PoseLandmark.LEFT_HIP]
-            right_hip = landmarks[mp_pose.PoseLandmark.RIGHT_HIP]
-            left_ankle = landmarks[mp_pose.PoseLandmark.LEFT_ANKLE]
-            right_ankle = landmarks[mp_pose.PoseLandmark.RIGHT_ANKLE]
+            nose = landmarks[pose_utils.NOSE]
+            left_shoulder = landmarks[pose_utils.LEFT_SHOULDER]
+            right_shoulder = landmarks[pose_utils.RIGHT_SHOULDER]
+            left_hip = landmarks[pose_utils.LEFT_HIP]
+            right_hip = landmarks[pose_utils.RIGHT_HIP]
+            left_ankle = landmarks[pose_utils.LEFT_ANKLE]
+            right_ankle = landmarks[pose_utils.RIGHT_ANKLE]
 
             # Calculate center points
             shoulder_center = self._get_midpoint(left_shoulder, right_shoulder)
@@ -153,7 +144,7 @@ class FallDetector:#DECTION OF FALLS CALCULATIONS OF POSITION, THIS WAS HELPED T
             # Fall detection logic
             is_fall = False
             fall_type = None
-            ankles_visible = left_ankle.visibility > 0.5 and right_ankle.visibility > 0.5
+            ankles_visible = pose_utils.visibility(left_ankle) > 0.5 and pose_utils.visibility(right_ankle) > 0.5
 
             # Check Number1: Body is horizontal (fallen)
             if body_angle > 60:  # More than 60 degrees from vertical
@@ -228,10 +219,10 @@ camera_state = {"running": False, "person_detected": False, "fps": 0.0, "last_fa
 latest_jpeg = None
 frame_lock = threading.Lock()
 TORSO_LANDMARKS = [
-    mp_pose.PoseLandmark.LEFT_SHOULDER,
-    mp_pose.PoseLandmark.RIGHT_SHOULDER,
-    mp_pose.PoseLandmark.LEFT_HIP,
-    mp_pose.PoseLandmark.RIGHT_HIP,
+    pose_utils.LEFT_SHOULDER,
+    pose_utils.RIGHT_SHOULDER,
+    pose_utils.LEFT_HIP,
+    pose_utils.RIGHT_HIP,
 ]
 
 #camera instilization 
@@ -262,14 +253,9 @@ def robot_camera_loop():
         print("No camera found - robot camera loop not started")
         return
 
-    loop_pose = mp_pose.Pose(
-        static_image_mode=False,
-        model_complexity=int(os.getenv("POSE_MODEL_COMPLEXITY", 0)),
-        min_detection_confidence=0.5,
-        min_tracking_confidence=0.5
-    )
+    loop_pose = pose_utils.create_landmarker(video=True, complexity=int(os.getenv("POSE_MODEL_COMPLEXITY", 0)))
     loop_detector = FallDetector()
-    drawer = mp.solutions.drawing_utils
+    timestamp_ms = 0
     confirm_frames = int(os.getenv("FALL_CONFIRM_FRAMES", 3))
     fall_streak = 0
     last_tick = time.time()
@@ -283,9 +269,9 @@ def robot_camera_loop():
                 time.sleep(0.05)
                 continue
 
-            results = loop_pose.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-            landmarks = results.pose_landmarks.landmark if results.pose_landmarks else None
-            visible = landmarks is not None and all(landmarks[i].visibility > 0.5 for i in TORSO_LANDMARKS)
+            timestamp_ms = max(timestamp_ms + 1, int(time.monotonic() * 1000))
+            landmarks = pose_utils.detect_landmarks(loop_pose, frame, timestamp_ms)
+            visible = landmarks is not None and all(pose_utils.visibility(landmarks[i]) > 0.5 for i in TORSO_LANDMARKS)
             camera_state["person_detected"] = visible
 
             if visible:
@@ -313,8 +299,8 @@ def robot_camera_loop():
             if not is_autonomous and follower.is_running:
                 follower.stop()
 
-            if results.pose_landmarks:
-                drawer.draw_landmarks(frame, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+            if landmarks:
+                pose_utils.draw_landmarks(frame, landmarks)
             ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
             if ok:
                 with frame_lock:
@@ -389,10 +375,10 @@ async def detect_fall(file: UploadFile = File(...)):
         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
         # Process with MediaPipe
-        results = pose.process(img_rgb)
+        landmarks = pose_utils.detect_landmarks(pose, img)
 
-        if results.pose_landmarks:
-            analysis = fall_detector.analyze_pose(results.pose_landmarks.landmark)
+        if landmarks:
+            analysis = fall_detector.analyze_pose(landmarks)
 
             if analysis["is_fall"]:
                 # Log the fall
@@ -444,10 +430,10 @@ async def detect_fall_base64(data: dict):
         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
         # Process with MediaPipe
-        results = pose.process(img_rgb)
+        landmarks = pose_utils.detect_landmarks(pose, img)
 
-        if results.pose_landmarks:
-            analysis = fall_detector.analyze_pose(results.pose_landmarks.landmark)
+        if landmarks:
+            analysis = fall_detector.analyze_pose(landmarks)
 
             if analysis["is_fall"]:
                 fall_record = {

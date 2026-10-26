@@ -6,7 +6,7 @@ import cv2
 #This code is helped with Devin, the code was hard to decode and what modules/imports to use were confusing and how to properly font this. 
 #The distance sensor are not nessary technaically so remove later
 import numpy as np
-import mediapipe as mp
+import pose_utils
 import os
 import time
 from typing import Tuple, Optional
@@ -25,14 +25,7 @@ class AutonomousController:
 
     def __init__(self, robot=None,create_hardware=True):
         # MediaPipe Pose initialization
-        self.mp_pose = mp.solutions.pose
-        self.pose = self.mp_pose.Pose(
-            static_image_mode=False,
-            model_complexity=1,
-            smooth_landmarks=True,
-            min_detection_confidence=0.5,
-            min_tracking_confidence=0.5
-        )
+        self.pose = None
 
         # Robot initialization
         self.robot = robot
@@ -79,14 +72,13 @@ class AutonomousController:
         if not self.is_running:#if person not moving stop moving car. 
             return False, {"action": "stop"}
 
-        # Convert to RGB
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
         # Process with MediaPipe
-        results = self.pose.process(frame_rgb)
+        if self.pose is None:
+            self.pose = pose_utils.create_landmarker(video=False, complexity=1)
+        landmarks = pose_utils.detect_landmarks(self.pose, frame)
 
-        if results.pose_landmarks:
-            commands = self.follow_landmarks(results.pose_landmarks.landmark)
+        if landmarks:
+            commands = self.follow_landmarks(landmarks)
             return True, commands
         else:
             self.lose_person()
@@ -103,10 +95,10 @@ class AutonomousController:
 
         # Get torso center (midpoint of shoulders and hips)#Media pose landmark, marking were these positions are
         #so when/if they fall can decect it
-        left_shoulder = landmarks[self.mp_pose.PoseLandmark.LEFT_SHOULDER]
-        right_shoulder = landmarks[self.mp_pose.PoseLandmark.RIGHT_SHOULDER]
-        left_hip = landmarks[self.mp_pose.PoseLandmark.LEFT_HIP]
-        right_hip = landmarks[self.mp_pose.PoseLandmark.RIGHT_HIP]
+        left_shoulder = landmarks[pose_utils.LEFT_SHOULDER]
+        right_shoulder = landmarks[pose_utils.RIGHT_SHOULDER]
+        left_hip = landmarks[pose_utils.LEFT_HIP]
+        right_hip = landmarks[pose_utils.RIGHT_HIP]
 
         # Calculate center of mass in image coordinates
         center_x = (left_shoulder.x + right_shoulder.x + left_hip.x + right_hip.x) / 4
