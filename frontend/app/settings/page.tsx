@@ -27,17 +27,21 @@ export default function Settings() {
   }, []);
 
   const loadContacts = async () => {
+    const cached = window.localStorage.getItem('sliplert_contacts');
+    if (cached) {
+      try {
+        setContacts(JSON.parse(cached));
+      } catch {}
+    }
     try {
       const response = await fetch(`${getBackendUrl()}/emergency-contacts`);
-      if (!response.ok) {
-        console.error('Backend response not OK:', response.status);
-        return;
-      }
+      if (!response.ok) return;
       const data = await response.json();
-      setContacts(data.contacts || []);
-    } catch (error) {
-      console.error('Failed to load contacts:', error);
-      alert(`Failed to connect to backend. Make sure the backend is running on ${getBackendUrl()}`);
+      if (data.contacts && data.contacts.length > 0) {
+        setContacts(data.contacts);
+        window.localStorage.setItem('sliplert_contacts', JSON.stringify(data.contacts));
+      }
+    } catch {
     }
   };
 
@@ -46,6 +50,13 @@ export default function Settings() {
       alert('Please fill in all fields');
       return;
     }
+
+    const fallbackContact: EmergencyContact = {
+      id: Date.now(),
+      name: newContact.name,
+      phone: newContact.phone,
+      relationship: newContact.relationship,
+    };
 
     try {
       const response = await fetch(`${getBackendUrl()}/emergency-contacts`, {
@@ -56,38 +67,35 @@ export default function Settings() {
 
       if (response.ok) {
         const data = await response.json();
-        setContacts([...contacts, data.contact]);
+        const updated = [...contacts, data.contact];
+        setContacts(updated);
+        window.localStorage.setItem('sliplert_contacts', JSON.stringify(updated));
         setNewContact({ name: '', phone: '', relationship: '' });
         setShowContactForm(false);
-        alert('Contact added successfully!');
-      } else {
-        const errorData = await response.json();
-        alert(`Failed to add contact: ${errorData.detail || 'Unknown error'}`);
+        return;
       }
-    } catch (error) {
-      console.error('Failed to add contact:', error);
-      alert(`Failed to connect to backend. Make sure the backend is running on ${getBackendUrl()}`);
+    } catch {
     }
+
+    const updated = [...contacts, fallbackContact];
+    setContacts(updated);
+    window.localStorage.setItem('sliplert_contacts', JSON.stringify(updated));
+    setNewContact({ name: '', phone: '', relationship: '' });
+    setShowContactForm(false);
   };
 
   const deleteContact = async (id: number) => {
     if (!confirm('Are you sure you want to delete this contact?')) return;
 
+    const updated = contacts.filter(c => c.id !== id);
+    setContacts(updated);
+    window.localStorage.setItem('sliplert_contacts', JSON.stringify(updated));
+
     try {
-      const response = await fetch(`${getBackendUrl()}/emergency-contacts/${id}`, {
+      await fetch(`${getBackendUrl()}/emergency-contacts/${id}`, {
         method: 'DELETE',
       });
-
-      if (response.ok) {
-        setContacts(contacts.filter(c => c.id !== id));
-        alert('Contact deleted successfully!');
-      } else {
-        const errorData = await response.json();
-        alert(`Failed to delete contact: ${errorData.detail || 'Unknown error'}`);
-      }
-    } catch (error) {
-      console.error('Failed to delete contact:', error);
-      alert(`Failed to connect to backend. Make sure the backend is running on ${getBackendUrl()}`);
+    } catch {
     }
   };
 

@@ -59,18 +59,19 @@ export default function CameraDashboard() {
       ...prev,
       postureScore: Math.max(0, Math.floor(100 - (bodyAngle || 80))),
     }));
-    const who = calledContacts && calledContacts.length > 0
-      ? calledContacts.join(', ')
-      : 'saved emergency contacts';
-    const phones = calledPhones || [];
+    let contactsList = calledContacts && calledContacts.length > 0 ? calledContacts : [];
+    let phones = calledPhones && calledPhones.length > 0 ? calledPhones : [];
+    if (contactsList.length === 0 && typeof window !== 'undefined') {
+      try {
+        const saved = JSON.parse(window.localStorage.getItem('sliplert_contacts') || '[]');
+        contactsList = saved.map((c: { name: string; phone: string }) => `${c.name} (${c.phone})`);
+        phones = saved.map((c: { phone: string }) => c.phone);
+      } catch {}
+    }
+    const who = contactsList.length > 0 ? contactsList.join(', ') : 'saved emergency contacts';
     setAlertPhones(phones);
     setAlertMessage(`FALL DETECTED (${fallType.toUpperCase()}) — CALLING ${who.toUpperCase()}`);
     addLog(`CRITICAL: Fall detected (${fallType})! Stopping robot & alerting ${who}...`);
-
-    if (phones.length > 0 && typeof window !== 'undefined') {
-      const msg = encodeURIComponent('SlipLert Emergency Alert: A fall was just detected. Please check on your loved one immediately.');
-      window.open(`sms:${phones[0]}?body=${msg}`, '_self');
-    }
 
     if (alertTimerRef.current) clearTimeout(alertTimerRef.current);
     setTimeout(() => {
