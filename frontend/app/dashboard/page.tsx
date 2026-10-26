@@ -22,7 +22,7 @@ export default function CameraDashboard() {
   const alertTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const backendUrlRef = useRef(DEFAULT_BACKEND_URL);
   const [status, setStatus] = useState('ONLINE');
-  const [alertMessage, setAlertMessage] = useState('⚠️ FALL PATTERN CONFIRMED BY MEDIAPIPE');
+  const [alertMessage, setAlertMessage] = useState('FALL PATTERN CONFIRMED BY MEDIAPIPE');
   const [robot, setRobot] = useState<RobotStatus | null>(null);
   const [feed, setFeed] = useState<'laptop' | 'robot'>('laptop');
   const [robotBusy, setRobotBusy] = useState(false);
@@ -56,18 +56,18 @@ export default function CameraDashboard() {
     const who = calledContacts && calledContacts.length > 0
       ? calledContacts.join(', ')
       : 'saved emergency contacts';
-    setAlertMessage(`⚠️ FALL DETECTED (${fallType.toUpperCase()}) — 📞 CALLING ${who.toUpperCase()}`);
-    addLog(`⚠️ CRITICAL: Fall detected (${fallType})! Stopping robot & calling ${who}...`);
+    setAlertMessage(`FALL DETECTED (${fallType.toUpperCase()}) — CALLING ${who.toUpperCase()}`);
+    addLog(`CRITICAL: Fall detected (${fallType})! Stopping robot & calling ${who}...`);
 
     if (alertTimerRef.current) clearTimeout(alertTimerRef.current);
     setTimeout(() => {
-      addLog(`📞 Emergency call & SMS dispatched to ${who}.`);
+      addLog(`Emergency call & SMS dispatched to ${who}.`);
     }, 2000);
 
     alertTimerRef.current = setTimeout(() => {
       setStatus('ONLINE');
       setStats(prev => ({ ...prev, postureScore: 98 }));
-      addLog('✅ Call completed — resumed live fall monitoring.');
+      addLog('Call completed — resumed live fall monitoring.');
     }, 6500);
   };
 

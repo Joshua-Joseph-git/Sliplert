@@ -594,7 +594,7 @@ def send_emergency_alert(fall_record: dict) -> bool:
             return False
         last_alert_time = now
 
-    print(f"🚨 EMERGENCY ALERT: Fall detected at {fall_record['timestamp']}")
+    print(f"EMERGENCY ALERT: Fall detected at {fall_record['timestamp']}")
     print(f"Fall type: {fall_record['fall_type']}")
     print(f"Body angle: {fall_record['body_angle']:.2f}°")
 
