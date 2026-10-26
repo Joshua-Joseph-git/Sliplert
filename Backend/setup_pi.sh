@@ -32,9 +32,17 @@ echo
 echo "== 3/5 Python packages (first time can take several minutes)"
 .venv/bin/pip install -r requirements.txt
 
+# A sudden power-off can leave package files half-written: pip still says "already satisfied" but
+# imports fail (e.g. "cannot import name 'FastAPI'"). If that happens, rebuild .venv from scratch.
+if ! .venv/bin/python -c "from fastapi import FastAPI; import uvicorn, cv2, numpy, onnxruntime" 2>/dev/null; then
+    echo "Damaged packages found in .venv - rebuilding it from scratch..."
+    python3 -m venv --system-site-packages --clear .venv
+    .venv/bin/pip install --no-cache-dir --force-reinstall -r requirements.txt
+fi
+
 echo
 echo "== 4/5 Checking everything can load"
-.venv/bin/python -c "import fastapi, cv2, numpy; print('Server + OpenCV: OK')"
+.venv/bin/python -c "from fastapi import FastAPI; import uvicorn, cv2, numpy, onnxruntime; print('Server + OpenCV + pose AI: OK')"
 .venv/bin/python -c "import picamera2; print('Pi camera library: OK')" || echo "WARNING: Pi camera library not loading - is the camera enabled and the ribbon cable seated?"
 .venv/bin/python -c "import lgpio; print('Motor driver library: OK')" || echo "WARNING: motor driver library (lgpio) not loading"
 
