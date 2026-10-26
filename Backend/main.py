@@ -2,8 +2,9 @@
 import os
 import sys
 
-_venv_py = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".venv", "bin", "python")
-if os.path.exists(_venv_py) and os.path.realpath(sys.executable) != os.path.realpath(_venv_py):
+_venv_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".venv")
+_venv_py = os.path.join(_venv_dir, "bin", "python")
+if os.path.exists(_venv_py) and os.path.abspath(sys.prefix) != os.path.abspath(_venv_dir):
     os.execv(_venv_py, [_venv_py] + sys.argv)
 
 #Imports that are going to be used listed below, rember to credit them for vid
