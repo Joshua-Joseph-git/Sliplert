@@ -34,7 +34,7 @@ except ImportError:
     pass
 
 try:
-    from gpiozero import Robot
+    from gpiozero import Robot, Motor
     GPIO_AVAILABLE = True
 except ImportError:
     GPIO_AVAILABLE = False
@@ -105,13 +105,18 @@ if sys.platform.startswith("linux"):
 
 if GPIO_AVAILABLE:
 
+    lf, lb = int(os.getenv("ROBOT_LEFT_FORWARD_PIN", 17)), int(os.getenv("ROBOT_LEFT_BACKWARD_PIN", 18))
+    rf, rb = int(os.getenv("ROBOT_RIGHT_FORWARD_PIN", 22)), int(os.getenv("ROBOT_RIGHT_BACKWARD_PIN", 23))
     try:
-        robot = Robot(
-            left=(int(os.getenv("ROBOT_LEFT_FORWARD_PIN", 17)), int(os.getenv("ROBOT_LEFT_BACKWARD_PIN", 18))),
-            right=(int(os.getenv("ROBOT_RIGHT_FORWARD_PIN", 22)), int(os.getenv("ROBOT_RIGHT_BACKWARD_PIN", 23))),
-            pwm=False
-        )
+        robot = Robot(left=Motor(lf, lb, pwm=False), right=Motor(rf, rb, pwm=False))
         print("Robot GPIO initialized")
+    except TypeError:
+        try:
+            robot = Robot(left=(lf, lb), right=(rf, rb), pwm=False)
+            print("Robot GPIO initialized")
+        except Exception as e:
+            print(f"Robot GPIO initialization failed (not on Raspberry Pi): {e}")
+            GPIO_AVAILABLE = False
     except Exception as e:
         print(f"Robot GPIO initialization failed (not on Raspberry Pi): {e}")
         GPIO_AVAILABLE = False
@@ -187,8 +192,11 @@ class FallDetector:#DECTION OF FALLS CALCULATIONS OF POSITION, THIS WAS HELPED T
                 fall_type = "horizontal"
                 body_angle = max(body_angle, 70.0)
 
-            # Check Number 2: Fast downward drop (dropped > 25% of frame height quickly into lower frame)
-            elif (downward_velocity > 0.55 and recent_drop > 0.24 and head_y > 0.62) or (recent_drop > 0.32 and head_y > 0.72):
+            # Check Number 2: Big/fast downward drop — counts even if the person
+            # doesn't end fully flat (collapsed to knees, slumped forward, etc.)
+            elif (downward_velocity > 0.45 and recent_drop > 0.22) or \
+               (downward_velocity > 0.55 and recent_drop > 0.24 and head_y > 0.62) or \
+               (recent_drop > 0.30 and downward_velocity > 0.20):
                 is_fall = True
                 fall_type = "fast_fall"
                 body_angle = max(body_angle, 75.0)
@@ -675,16 +683,68 @@ def _normalize_phone(phone: str) -> str:
     return digits
 
 
+def _lookup_mx_hosts(domain: str) -> list:
+    """Look up MX records for a domain; auto-installs dnspython if needed."""
+    try:
+        import dns.resolver
+    except ImportError:
+        subprocess.run([sys.executable, "-m", "pip", "install", "-q", "dnspython"], check=False)
+        try:
+            import dns.resolver
+        except ImportError:
+            return []
+    try:
+        answers = dns.resolver.resolve(domain, "MX", lifetime=6)
+        hosts = sorted([(int(r.preference), str(r.exchange).rstrip(".")) for r in answers])
+        return [h for _, h in hosts]
+    except Exception:
+        return []
+
+
+def _send_direct_mx_email(recipient: str, subject: str, body: str) -> bool:
+    """Deliver mail straight to the recipient's mail server — no account or activation needed."""
+    import smtplib
+    from email.message import EmailMessage
+    domain = recipient.split("@")[-1].strip().lower()
+    mx_hosts = _lookup_mx_hosts(domain)
+    if not mx_hosts:
+        # Common-provider MX guesses when DNS lookup is unavailable
+        guesses = {
+            "gmail.com": "gmail-smtp-in.l.google.com",
+            "googlemail.com": "gmail-smtp-in.l.google.com",
+            "yahoo.com": "mta5.am0.yahoodns.net",
+            "icloud.com": "mx01.mail.icloud.com",
+            "me.com": "mx01.mail.icloud.com",
+            "outlook.com": "outlook-com.olc.protection.outlook.com",
+            "hotmail.com": "hotmail-com.olc.protection.outlook.com",
+        }
+        mx_hosts = [guesses[domain]] if domain in guesses else [f"mail.{domain}", domain]
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = "alerts@sliplert.local"
+    msg["To"] = recipient
+    msg.set_content(body)
+    for host in mx_hosts[:3]:
+        try:
+            with smtplib.SMTP(host, 25, timeout=8) as s:
+                s.send_message(msg)
+            print(f"Emergency email delivered directly to {recipient} via {host}")
+            return True
+        except Exception as e:
+            print(f"Direct MX delivery via {host} failed: {e}")
+    return False
+
+
 def _send_emergency_email(recipient: str, name: str, fall_record: dict) -> bool:
-    subject = "URGENT: SlipLert Fall Detected - Check on Your Loved One"
+    subject = "URGENT: SlipLert Fall Detected"
     body = (
         f"Hello {name},\n\n"
-        f"SlipLert detected a fall.\n"
+        f"Your loved one has fallen — please check on them immediately.\n\n"
         f"- Time: {fall_record.get('timestamp')}\n"
         f"- Fall Type: {fall_record.get('fall_type')}\n"
         f"- Body Angle: {fall_record.get('body_angle', 0):.1f} deg\n"
-        f"- Robot Action: Stopped safely next to resident\n\n"
-        f"Please check on your loved one immediately."
+        f"- Robot: stopped safely next to them\n\n"
+        f"- SlipLert Autonomous Safety Monitor"
     )
     smtp_user = os.getenv("SMTP_EMAIL", "").strip()
     smtp_pass = os.getenv("SMTP_PASSWORD", "").strip()
@@ -704,6 +764,9 @@ def _send_emergency_email(recipient: str, name: str, fall_record: dict) -> bool:
             return True
         except Exception as e:
             print(f"SMTP email error: {e}")
+
+    if _send_direct_mx_email(recipient, subject, body):
+        return True
 
     try:
         import urllib.request

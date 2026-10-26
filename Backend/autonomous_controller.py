@@ -14,7 +14,7 @@ import math
 
 # Check if running on Raspberry Pi
 try:
-    from gpiozero import Robot
+    from gpiozero import Robot, Motor
     GPIO_AVAILABLE = True
 except ImportError:
     GPIO_AVAILABLE = False
@@ -31,7 +31,12 @@ class AutonomousController:
         self.robot = robot
         if create_hardware and robot is None and GPIO_AVAILABLE:
             try:
-                self.robot = Robot(left=(17, 18), right=(22, 23), pwm=False)
+                self.robot = Robot(left=Motor(17, 18, pwm=False), right=Motor(22, 23, pwm=False))
+            except TypeError:
+                try:
+                    self.robot = Robot(left=(17, 18), right=(22, 23), pwm=False)
+                except Exception as e:
+                    print(f"Robot GPIO initialization failed: {e}") #ERROR CODE IF THE CODE WRITTEN DOSEN"T WORK
             except Exception as e:
                 print(f"Robot GPIO initialization failed: {e}") #ERROR CODE IF THE CODE WRITTEN DOSEN"T WORK
 
@@ -206,37 +211,6 @@ class AutonomousController:
             commands["turn"] = 0
 
         return commands
-
-    def _check_obstacles(self) -> Optional[str]:
-        """Check distance sensors for obstacles"""
-        if not GPIO_AVAILABLE or not self.distance_sensors:
-            return None
-
-        for direction, sensor in self.distance_sensors.items():
-            try:
-                distance = sensor.distance * 100  # Convert to cm
-                if distance < 30:  # Obstacle within 30cm
-                    return direction
-            except:
-                pass
-
-        return None
-
-    def _handle_obstacle(self, direction: str) -> dict:
-        """Handle obstacle detection"""
-        print(f"Obstacle detected at {direction}")
-
-        if direction == "front": #DRIVING FUNCTIONS
-            # Obstacle ahead:stop and wait
-            return {"action": "stop", "reason": "obstacle_front"}
-        elif direction == "left":
-            # Obstacle on left: turn right
-            return {"action": "right", "speed": self.turn_speed}
-        elif direction == "right":
-            # Obstacle on right: turn left
-            return {"action": "left", "speed": self.turn_speed}
-
-        return {"action": "stop"}
 
     def _execute_commands(self, commands: dict):
         """Execute robot control commands"""

@@ -74,44 +74,17 @@ export default function CameraDashboard() {
     setAlertMessage(`FALL DETECTED (${fallType.toUpperCase()}) — EMAIL DISPATCHED TO ${who.toUpperCase()}`);
     addLog(`CRITICAL: Fall detected (${fallType})! Stopping robot & emailing ${who}...`);
 
-    const subject = 'URGENT: SlipLert Fall Detected - Check on Your Loved One';
+    const subject = 'URGENT: SlipLert Fall Detected';
     const nowStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    const bodyText = `SlipLert detected a confirmed fall (${fallType}, angle ${Math.round(bodyAngle || 80)} deg) at ${nowStr}. The autonomous robot car has stopped safely next to your loved one. Please check on them immediately.`;
+    const bodyText = `Your loved one has fallen — please check on them immediately. (${fallType}, angle ${Math.round(bodyAngle || 80)} deg at ${nowStr}) The robot car has stopped safely next to them.`;
     setSentEmails(prev => [
       { to: phones.length > 0 ? phones.join(', ') : who, subject, time: nowStr, body: bodyText },
       ...prev.slice(0, 3),
     ]);
 
-    for (const target of phones) {
-      const trimmed = (target || '').trim();
-      if (trimmed.includes('@')) {
-        fetch(`https://formsubmit.co/ajax/${encodeURIComponent(trimmed)}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-          body: JSON.stringify({
-            _subject: 'URGENT: SlipLert Fall Detected - Check on Your Loved One',
-            name: 'SlipLert Autonomous Safety Monitor',
-            fall_type: fallType,
-            body_angle: `${Math.round(bodyAngle || 80)} deg`,
-            timestamp: new Date().toLocaleString(),
-            message: `SlipLert detected a confirmed fall (${fallType}). The autonomous robot car has stopped safely next to your loved one. Please check on them immediately.`,
-          }),
-        })
-          .then(r => r.json())
-          .then(res => {
-            if (res?.message && String(res.message).toLowerCase().includes('activate')) {
-              addLog(`Check ${trimmed} inbox/spam once to click 'Activate FormSubmit'.`);
-            } else {
-              addLog(`Email delivered to ${trimmed}.`);
-            }
-          })
-          .catch(() => {});
-      }
-    }
-
     if (alertTimerRef.current) clearTimeout(alertTimerRef.current);
     setTimeout(() => {
-      addLog(`Emergency email notification delivered to ${who}.`);
+      addLog(`Emergency email notification dispatched to ${who}.`);
     }, 2000);
 
     alertTimerRef.current = setTimeout(() => {
