@@ -243,6 +243,7 @@ follower = AutonomousController(robot=robot, create_hardware=False)
 camera_state = {"running": False, "person_detected": False, "fps": 0.0, "body_angle": 0.0, "posture_score": 98, "last_fall": None}
 latest_jpeg = None
 frame_lock = threading.Lock()
+camera_loop_lock = threading.Lock()
 TORSO_LANDMARKS = [
     pose_utils.NOSE,
     pose_utils.LEFT_SHOULDER,
@@ -302,74 +303,80 @@ def open_camera():
 #the camera constantly is running and checking for the condtiions and if it is connected
 def robot_camera_loop():
     global latest_jpeg
-    read_frame, release = open_camera()
-    if not read_frame:
-        print("No camera found - robot camera loop not started")
+    if not camera_loop_lock.acquire(blocking=False):
         return
-
-    loop_pose = pose_utils.create_landmarker(video=True, complexity=int(os.getenv("POSE_MODEL_COMPLEXITY", 0)))
-    loop_detector = FallDetector()
-    timestamp_ms = 0
-    confirm_frames = int(os.getenv("FALL_CONFIRM_FRAMES", 3))
-    fall_streak = 0
-    last_tick = time.time()
-    camera_state["running"] = True
-    print("Robot camera loop running")
-
     try:
-        while not stop_event.is_set():
-            frame = read_frame()
-            if frame is None:
-                time.sleep(0.05)
-                continue
+        read_frame, release = open_camera()
+        if not read_frame:
+            print("No camera found - robot camera loop not started")
+            return
 
-            timestamp_ms = max(timestamp_ms + 1, int(time.monotonic() * 1000))
-            landmarks = pose_utils.detect_landmarks(loop_pose, frame, timestamp_ms)
-            visible = landmarks is not None and sum(pose_utils.visibility(landmarks[i]) > 0.35 for i in TORSO_LANDMARKS) >= 2
-            camera_state["person_detected"] = visible
+        loop_pose = pose_utils.create_landmarker(video=True, complexity=int(os.getenv("POSE_MODEL_COMPLEXITY", 0)))
+        loop_detector = FallDetector()
+        timestamp_ms = 0
+        confirm_frames = int(os.getenv("FALL_CONFIRM_FRAMES", 3))
+        fall_streak = 0
+        last_tick = time.time()
+        camera_state["running"] = True
+        print("Robot camera loop running")
 
-            if visible:
-                analysis = loop_detector.analyze_pose(landmarks)
-                angle = float(analysis.get("body_angle", 0.0))
-                camera_state["body_angle"] = round(angle, 1)
-                camera_state["posture_score"] = max(0, min(100, int(round(100 - angle))))
-                fall_streak = fall_streak + 1 if analysis.get("is_fall") else 0
-                if fall_streak >= confirm_frames:
-                    fall_streak = 0
-                    record = {
-                        "timestamp": datetime.now().isoformat(),
-                        "fall_type": analysis["fall_type"],
-                        "body_angle": analysis["body_angle"],
-                        "confidence": analysis["confidence"],
-                        "source": "robot_camera"
-                    }#CHECKS FOR FALL IF SO THERE IS AN ALERT
-                    camera_state["last_fall"] = record
-                    if send_emergency_alert(record):
-                        fall_history.append(record)
-                        save_fall_history_to_file()
+        try:
+            while not stop_event.is_set():
+                frame = read_frame()
+                if frame is None:
+                    time.sleep(0.05)
+                    continue
+
+                timestamp_ms = max(timestamp_ms + 1, int(time.monotonic() * 1000))
+                landmarks = pose_utils.detect_landmarks(loop_pose, frame, timestamp_ms)
+                visible = landmarks is not None and sum(pose_utils.visibility(landmarks[i]) > 0.35 for i in TORSO_LANDMARKS) >= 2
+                camera_state["person_detected"] = visible
+                camera_state["running"] = True
+
+                if visible:
+                    analysis = loop_detector.analyze_pose(landmarks)
+                    angle = float(analysis.get("body_angle", 0.0))
+                    camera_state["body_angle"] = round(angle, 1)
+                    camera_state["posture_score"] = max(0, min(100, int(round(100 - angle))))
+                    fall_streak = fall_streak + 1 if analysis.get("is_fall") else 0
+                    if fall_streak >= confirm_frames:
+                        fall_streak = 0
+                        record = {
+                            "timestamp": datetime.now().isoformat(),
+                            "fall_type": analysis["fall_type"],
+                            "body_angle": analysis["body_angle"],
+                            "confidence": analysis["confidence"],
+                            "source": "robot_camera"
+                        }#CHECKS FOR FALL IF SO THERE IS AN ALERT
+                        camera_state["last_fall"] = record
+                        if send_emergency_alert(record):
+                            fall_history.append(record)
+                            save_fall_history_to_file()
+                    elif is_autonomous:
+                        follower.is_running = True
+                        follower.follow_landmarks(landmarks)
                 elif is_autonomous:
-                    follower.is_running = True
-                    follower.follow_landmarks(landmarks)
-            elif is_autonomous:
-                follower.lose_person()
+                    follower.lose_person()
 
-            if not is_autonomous and follower.is_running:
-                follower.stop()
+                if not is_autonomous and follower.is_running:
+                    follower.stop()
 
-            if landmarks:
-                pose_utils.draw_landmarks(frame, landmarks)
-            ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
-            if ok:
-                with frame_lock:
-                    latest_jpeg = buf.tobytes()
+                if landmarks:
+                    pose_utils.draw_landmarks(frame, landmarks)
+                ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                if ok:
+                    with frame_lock:
+                        latest_jpeg = buf.tobytes()
 
-            now = time.time()
-            camera_state["fps"] = round(1 / (now - last_tick), 1) if now > last_tick else 0.0
-            last_tick = now
+                now = time.time()
+                camera_state["fps"] = round(1 / (now - last_tick), 1) if now > last_tick else 0.0
+                last_tick = now
+        finally:
+            camera_state["running"] = False
+            follower.stop()
+            release()
     finally:
-        camera_state["running"] = False
-        follower.stop()
-        release()
+        camera_loop_lock.release()
 #STORAGE OF THE EMERGANCY CONTACTS
 def load_contacts_from_file():
     global emergency_contacts
