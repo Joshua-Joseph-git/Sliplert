@@ -73,17 +73,6 @@ export default function CameraDashboard() {
     setAlertMessage(`FALL DETECTED (${fallType.toUpperCase()}) — EMAIL DISPATCHED TO ${who.toUpperCase()}`);
     addLog(`CRITICAL: Fall detected (${fallType})! Stopping robot & emailing ${who}...`);
 
-    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-      try {
-        window.speechSynthesis.cancel();
-        const utter = new SpeechSynthesisUtterance(
-          `SlipLert Emergency Alert. A fall has been detected. Stopping robot and sending emergency email to ${who}.`
-        );
-        utter.rate = 1.0;
-        window.speechSynthesis.speak(utter);
-      } catch {}
-    }
-
     if (alertTimerRef.current) clearTimeout(alertTimerRef.current);
     setTimeout(() => {
       addLog(`Emergency email notification delivered to ${who}.`);
@@ -200,16 +189,11 @@ export default function CameraDashboard() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ enabled: true }),
       });
-      await fetch(`${finalUrl}/robot/autonomous`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled: true }),
-      });
       const res = await fetch(`${finalUrl}/robot/status`, { signal: AbortSignal.timeout(3000) });
       if (res.ok) {
         const data = await res.json();
         setRobot(data);
-        addLog(`Connected to robot car at ${finalUrl} — contacts synced & autonomous mode active.`);
+        addLog(`Connected to robot car at ${finalUrl} — ready to drive or start following.`);
       } else {
         addLog(`Could not reach ${finalUrl}.`);
       }

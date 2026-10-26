@@ -76,7 +76,7 @@ emergency_contacts = []
 fall_history = []
 robot_position = {"x": 0, "y": 0, "angle": 0}
 camera = None
-is_autonomous = True
+is_autonomous = False
 CONTACTS_FILE = "emergency_contacts.json"
 FALL_HISTORY_FILE = "fall_history.json"
 
@@ -373,13 +373,8 @@ def robot_camera_loop():
                     elif is_autonomous:
                         follower.is_running = True
                         follower.follow_landmarks(landmarks)
-                elif is_autonomous:
-                    lost_frames += 1
-                    if lost_frames >= 15:
-                        follower.lose_person()
-
-                if not is_autonomous and follower.is_running:
-                    follower.stop()
+                elif is_autonomous and robot:
+                    robot.backward()
 
                 if landmarks:
                     pose_utils.draw_landmarks(frame, landmarks)
@@ -831,11 +826,16 @@ async def toggle_autonomous(settings: dict):
     """Toggle autonomous mode"""
     global is_autonomous
     is_autonomous = bool(settings.get("enabled", False))
-    if is_autonomous and not camera_state["running"]:
-        stop_event.clear()
-        threading.Thread(target=robot_camera_loop, daemon=True).start()
-    if not is_autonomous:
+    if is_autonomous:
+        if robot:
+            robot.backward()
+        if not camera_state["running"]:
+            stop_event.clear()
+            threading.Thread(target=robot_camera_loop, daemon=True).start()
+    else:
         follower.stop()
+        if robot:
+            robot.stop()
     message = f"Autonomous mode {'enabled' if is_autonomous else 'disabled'}"
     return {"message": message, "status": is_autonomous}
 
@@ -844,12 +844,11 @@ async def toggle_robot_camera(settings: dict):
     global is_autonomous, latest_jpeg
     enable = bool(settings.get("enabled", True))
     if enable:
-        is_autonomous = True
         if not camera_state["running"]:
             stop_event.clear()
             threading.Thread(target=robot_camera_loop, daemon=True).start()
             await asyncio.sleep(0.6)
-        return {"message": "Robot camera and autonomous mode started", "camera_running": camera_state["running"], "autonomous": is_autonomous}
+        return {"message": "Robot camera started", "camera_running": camera_state["running"], "autonomous": is_autonomous}
     is_autonomous = False
     follower.stop()
     stop_event.set()
