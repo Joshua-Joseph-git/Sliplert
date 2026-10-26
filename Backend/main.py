@@ -319,6 +319,24 @@ def open_camera():
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
     if not cap.isOpened():
         return None, None
+    cv_frame = [None]
+    def _grab_cv():
+        try:
+            ok, fr = cap.read()
+            if ok and fr is not None:
+                cv_frame[0] = fr
+        except Exception:
+            pass
+    cv_probe = threading.Thread(target=_grab_cv, daemon=True)
+    cv_probe.start()
+    cv_probe.join(timeout=2.5)
+    if cv_frame[0] is None:
+        try:
+            cap.release()
+        except Exception:
+            pass
+        print("OpenCV camera opened but returned no frames")
+        return None, None
     print("Using OpenCV camera")
     return (lambda: cap.read()[1]), cap.release
 
@@ -330,7 +348,11 @@ def robot_camera_loop():
     try:
         read_frame, release = open_camera()
         if not read_frame:
-            print("No camera found - robot camera loop not started")
+            print("No camera frames available - running autonomous motor loop without camera")
+            while not stop_event.is_set():
+                if is_autonomous and robot:
+                    robot.backward()
+                time.sleep(0.1)
             return
 
         loop_pose = pose_utils.create_landmarker(video=True, complexity=int(os.getenv("POSE_MODEL_COMPLEXITY", 0)))
@@ -347,12 +369,15 @@ def robot_camera_loop():
             while not stop_event.is_set():
                 frame = read_frame()
                 if frame is None:
+                    if is_autonomous:
+                        follower.is_running = True
+                        follower.search_last_direction()
                     time.sleep(0.05)
                     continue
 
                 timestamp_ms = max(timestamp_ms + 1, int(time.monotonic() * 1000))
                 landmarks = pose_utils.detect_landmarks(loop_pose, frame, timestamp_ms)
-                visible = landmarks is not None and sum(pose_utils.visibility(landmarks[i]) > 0.35 for i in TORSO_LANDMARKS) >= 2
+                visible = landmarks is not None and any(pose_utils.visibility(landmarks[i]) > 0.18 for i in TORSO_LANDMARKS)
                 camera_state["person_detected"] = visible
                 camera_state["running"] = True
 
@@ -379,8 +404,9 @@ def robot_camera_loop():
                     elif is_autonomous:
                         follower.is_running = True
                         follower.follow_landmarks(landmarks)
-                elif is_autonomous and robot:
-                    robot.backward()
+                elif is_autonomous:
+                    follower.is_running = True
+                    follower.search_last_direction()
 
                 if landmarks:
                     pose_utils.draw_landmarks(frame, landmarks)

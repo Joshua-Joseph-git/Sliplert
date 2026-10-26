@@ -89,20 +89,35 @@ class AutonomousController:
         if self.robot:
             self.robot.stop()
 
+    def search_last_direction(self):
+        if not self.is_running or not self.robot:
+            return
+        last_x = self.last_person_position["x"] if self.last_person_position else 0.5
+        if last_x < 0.32:
+            self.robot.left()
+        elif last_x > 0.68:
+            self.robot.right()
+        else:
+            self.robot.backward()
+
     def follow_landmarks(self, landmarks) -> dict:
         if not self.is_running:
             return {"action": "stop"}
 
-        # Get torso center (midpoint of shoulders, or shoulders + hips if visible)#Media pose landmark, marking were these positions are
-        #so when/if they fall can decect it
+        # Get torso center (midpoint of shoulders, or any visible upper-body point when partially out of frame)
+        nose = landmarks[pose_utils.NOSE]
         left_shoulder = landmarks[pose_utils.LEFT_SHOULDER]
         right_shoulder = landmarks[pose_utils.RIGHT_SHOULDER]
         left_hip = landmarks[pose_utils.LEFT_HIP]
         right_hip = landmarks[pose_utils.RIGHT_HIP]
 
-        if pose_utils.visibility(left_hip) > 0.45 and pose_utils.visibility(right_hip) > 0.45:
-            center_x = (left_shoulder.x + right_shoulder.x + left_hip.x + right_hip.x) / 4
-            center_y = (left_shoulder.y + right_shoulder.y + left_hip.y + right_hip.y) / 4
+        vis_pts = [
+            pt for pt in (left_shoulder, right_shoulder, nose, left_hip, right_hip)
+            if pose_utils.visibility(pt) > 0.15
+        ]
+        if vis_pts:
+            center_x = sum(pt.x for pt in vis_pts) / len(vis_pts)
+            center_y = sum(pt.y for pt in vis_pts) / len(vis_pts)
         else:
             center_x = (left_shoulder.x + right_shoulder.x) / 2
             center_y = (left_shoulder.y + right_shoulder.y) / 2
@@ -118,6 +133,7 @@ class AutonomousController:
             "distance": estimated_distance,
             "confidence": 0.9
         }
+        self.last_person_position = self.person_position
 
         # Calculate control commands
         control_commands = self._calculate_control_commands(center_x, estimated_distance)
