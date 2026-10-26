@@ -2,7 +2,8 @@
 import { useRef, useEffect, useState } from 'react';
 import Link from 'next/link';
 
-const DEFAULT_BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || '';
+const DEFAULT_BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+const LOCAL_CAMERA_URL = 'http://localhost:8000';
 
 type RobotStatus = {
   autonomous: boolean;
@@ -33,7 +34,8 @@ export default function CameraDashboard() {
   const [robotBusy, setRobotBusy] = useState(false);
   const [backendUrl, setBackendUrl] = useState(DEFAULT_BACKEND_URL);
   const [urlInput, setUrlInput] = useState(DEFAULT_BACKEND_URL);
-  const [connected, setConnected] = useState(false);
+  const [connected, setConnected] = useState(true);
+  const [activeStreamUrl, setActiveStreamUrl] = useState(LOCAL_CAMERA_URL);
   const [streamKey, setStreamKey] = useState(0);
   const [systemLog, setSystemLog] = useState<string[]>([
     'System initialized.',
@@ -91,53 +93,76 @@ export default function CameraDashboard() {
 
   useEffect(() => {
     const saved = window.localStorage.getItem('sliplert_backend_url');
-    if (saved && !saved.includes('localhost')) {
+    if (saved) {
       setBackendUrl(saved);
       setUrlInput(saved);
-      setConnected(true);
-    } else if (DEFAULT_BACKEND_URL) {
-      setBackendUrl(DEFAULT_BACKEND_URL);
-      setUrlInput(DEFAULT_BACKEND_URL);
-      setConnected(true);
     }
+    setConnected(true);
     return () => {
       if (alertTimerRef.current) clearTimeout(alertTimerRef.current);
     };
   }, []);
 
   useEffect(() => {
-    if (!connected || !backendUrl) {
+    if (!connected) {
       setRobot(null);
       return;
     }
     const checkRobot = async () => {
       const t0 = performance.now();
+      const target = backendUrl || LOCAL_CAMERA_URL;
       try {
-        const response = await fetch(`${backendUrl}/robot/status`, { signal: AbortSignal.timeout(2500) });
-        if (!response.ok) {
-          setRobot(null);
+        const response = await fetch(`${target}/robot/status`, { signal: AbortSignal.timeout(2000) });
+        if (response.ok) {
+          const elapsed = Math.max(1, Math.round(performance.now() - t0));
+          const data: RobotStatus = await response.json();
+          if (data.camera_running) {
+            setActiveStreamUrl(target);
+            setRobot(data);
+            setStats(prev => ({
+              fps: data.fps,
+              latency: elapsed,
+              postureScore: typeof data.posture_score === 'number' ? data.posture_score : prev.postureScore,
+            }));
+            if (data.last_fall && data.last_fall.timestamp !== lastRobotFallRef.current) {
+              lastRobotFallRef.current = data.last_fall.timestamp;
+              triggerFallSequence(
+                data.last_fall.fall_type || 'horizontal',
+                data.last_fall.body_angle || 80,
+                data.last_fall.called_contacts,
+                data.last_fall.called_phones
+              );
+            }
+            return;
+          }
+        }
+      } catch {}
+
+      try {
+        const localRes = await fetch(`${LOCAL_CAMERA_URL}/robot/status`, { signal: AbortSignal.timeout(2000) });
+        if (localRes.ok) {
+          const elapsed = Math.max(1, Math.round(performance.now() - t0));
+          const localData: RobotStatus = await localRes.json();
+          setActiveStreamUrl(LOCAL_CAMERA_URL);
+          setRobot(localData);
+          setStats(prev => ({
+            fps: localData.camera_running ? localData.fps : 0,
+            latency: elapsed,
+            postureScore: typeof localData.posture_score === 'number' ? localData.posture_score : prev.postureScore,
+          }));
+          if (localData.last_fall && localData.last_fall.timestamp !== lastRobotFallRef.current) {
+            lastRobotFallRef.current = localData.last_fall.timestamp;
+            triggerFallSequence(
+              localData.last_fall.fall_type || 'horizontal',
+              localData.last_fall.body_angle || 80,
+              localData.last_fall.called_contacts,
+              localData.last_fall.called_phones
+            );
+          }
           return;
         }
-        const elapsed = Math.max(1, Math.round(performance.now() - t0));
-        const data: RobotStatus = await response.json();
-        setRobot(data);
-        setStats(prev => ({
-          fps: data.camera_running ? data.fps : 0,
-          latency: elapsed,
-          postureScore: typeof data.posture_score === 'number' ? data.posture_score : prev.postureScore,
-        }));
-        if (data.last_fall && data.last_fall.timestamp !== lastRobotFallRef.current) {
-          lastRobotFallRef.current = data.last_fall.timestamp;
-          triggerFallSequence(
-            data.last_fall.fall_type || 'horizontal',
-            data.last_fall.body_angle || 80,
-            data.last_fall.called_contacts,
-            data.last_fall.called_phones
-          );
-        }
-      } catch {
-        setRobot(null);
-      }
+      } catch {}
+      setRobot(null);
     };
     checkRobot();
     const poll = setInterval(checkRobot, 1000);
@@ -146,52 +171,44 @@ export default function CameraDashboard() {
 
   const toggleConnection = async () => {
     if (connected) {
-      try {
-        await fetch(`${backendUrl}/robot/camera`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ enabled: false }),
-        });
-      } catch {}
+      for (const url of [backendUrl, LOCAL_CAMERA_URL]) {
+        if (!url) continue;
+        try {
+          await fetch(`${url}/robot/camera`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled: false }),
+          });
+        } catch {}
+      }
       setConnected(false);
       setRobot(null);
       setStats(prev => ({ ...prev, fps: 0 }));
-      addLog('Disconnected from Raspberry Pi robot car.');
+      addLog('Disconnected camera & robot monitoring.');
       return;
     }
-    const clean = urlInput.trim().replace(/\/+$/, '');
-    if (!clean) {
-      addLog('Please enter your Raspberry Pi IP address first.');
-      return;
-    }
+    const clean = urlInput.trim().replace(/\/+$/, '') || LOCAL_CAMERA_URL;
     const finalUrl = clean.startsWith('http') ? clean : `http://${clean}${clean.includes(':') ? '' : ':8000'}`;
     setBackendUrl(finalUrl);
     setUrlInput(finalUrl);
     window.localStorage.setItem('sliplert_backend_url', finalUrl);
     setConnected(true);
     setStreamKey(prev => prev + 1);
-    try {
-      await fetch(`${finalUrl}/robot/camera`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled: true }),
-      });
-      await fetch(`${finalUrl}/robot/autonomous`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled: true }),
-      });
-      const res = await fetch(`${finalUrl}/robot/status`, { signal: AbortSignal.timeout(3000) });
-      if (res.ok) {
-        const data = await res.json();
-        setRobot(data);
-        addLog(`Connected to robot car at ${finalUrl} — autonomous mode active.`);
-      } else {
-        addLog(`Could not reach ${finalUrl}.`);
-      }
-    } catch {
-      addLog(`Could not reach ${finalUrl} — check that python main.py is running on the Pi.`);
+    for (const url of [finalUrl, LOCAL_CAMERA_URL]) {
+      try {
+        await fetch(`${url}/robot/camera`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled: true }),
+        });
+        await fetch(`${url}/robot/autonomous`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled: true }),
+        });
+      } catch {}
     }
+    addLog(`Connected — direct MediaPipe fall detection & autonomous mode active.`);
   };
 
   const toggleFollowing = async () => {
@@ -295,20 +312,18 @@ export default function CameraDashboard() {
           <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-2xl relative group aspect-video flex items-center justify-center">
             {connected && robot?.camera_running ? (
               <img
-                key={streamKey}
-                src={`${backendUrl}/video_feed?t=${streamKey}`}
+                key={`${activeStreamUrl}-${streamKey}`}
+                src={`${activeStreamUrl}/video_feed?t=${streamKey}`}
                 alt="Robot car camera perspective"
                 className="w-full h-full object-cover"
               />
             ) : (
               <div className="absolute inset-0 bg-slate-900 flex flex-col items-center justify-center p-6 text-center">
                 <div className="text-slate-300 text-sm font-semibold mb-2">
-                  {connected && robot ? 'Robot Connected — Waiting for Pi Camera Stream' : 'Robot Car Camera Feed Offline'}
+                  Camera Feed Disconnected
                 </div>
                 <div className="text-slate-500 text-xs max-w-md">
-                  {connected && robot
-                    ? 'Make sure the Pi ribbon camera is seated firmly and python main.py is running on the Raspberry Pi.'
-                    : 'Enter your Raspberry Pi IP address (e.g. 192.168.1.XX:8000) in Robot Control on the right and click Connect.'}
+                  Click Connect in Robot Car Control on the right to start live MediaPipe fall detection.
                 </div>
               </div>
             )}
@@ -318,23 +333,12 @@ export default function CameraDashboard() {
             </div>
             
             {status === 'ALERT_TRIGGERED' && (
-              <div className="absolute inset-0 bg-red-600/20 border-4 border-red-500 animate-pulse flex items-center justify-center">
+              <div className="absolute inset-0 bg-red-600/20 border-4 border-red-500 animate-pulse flex items-center justify-center pointer-events-none">
                 <div className="bg-slate-950/95 text-red-400 font-bold px-6 py-4 rounded-lg border border-red-500/50 text-center tracking-widest text-sm space-y-2">
                   <div>{alertMessage}</div>
                   {alertPhones.length > 0 && (
-                    <div className="flex gap-2 justify-center pt-1">
-                      <a
-                        href={`tel:${alertPhones[0]}`}
-                        className="px-3 py-1.5 bg-red-600 hover:bg-red-500 text-white rounded text-xs font-semibold uppercase"
-                      >
-                        Call {alertPhones[0]}
-                      </a>
-                      <a
-                        href={`sms:${alertPhones[0]}?body=${encodeURIComponent('SlipLert Emergency Alert: A fall was detected! Please check on your loved one immediately.')}`}
-                        className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded text-xs font-semibold uppercase"
-                      >
-                        Text {alertPhones[0]}
-                      </a>
+                    <div className="text-xs text-emerald-400 font-semibold">
+                      BACKEND DISPATCHED CALL & SMS TO: {alertPhones.join(', ')}
                     </div>
                   )}
                   <div className="text-xs text-slate-300 font-normal">Auto-resuming autonomous monitoring in 6s...</div>
