@@ -75,7 +75,7 @@ emergency_contacts = []
 fall_history = []
 robot_position = {"x": 0, "y": 0, "angle": 0}
 camera = None
-is_autonomous = False
+is_autonomous = True
 CONTACTS_FILE = "emergency_contacts.json"
 FALL_HISTORY_FILE = "fall_history.json"
 
@@ -256,6 +256,7 @@ def open_camera():
         picam = Picamera2()
         cfg = picam.create_preview_configuration(
             main={"size": (640, 480), "format": "RGB888"},
+            raw=None,
             buffer_count=2,
         )
         picam.configure(cfg)
@@ -458,6 +459,7 @@ async def detect_fall(file: UploadFile = File(...)):
                 "velocity": analysis["velocity"],
                 "confidence": analysis["confidence"],
                 "called_contacts": fall_record.get("called_contacts", []) if analysis["is_fall"] else [],
+                "called_phones": fall_record.get("called_phones", []) if analysis["is_fall"] else [],
             }
         else:
             return {"fall_detected": False, "message": "No pose detected"}
@@ -490,6 +492,7 @@ async def detect_fall_base64(data: dict):
                 "velocity": 2.4,
                 "confidence": 0.98,
                 "called_contacts": fall_record.get("called_contacts", []),
+                "called_phones": fall_record.get("called_phones", []),
             }
 
         image_data = data.get("image")
@@ -534,6 +537,7 @@ async def detect_fall_base64(data: dict):
                 "velocity": analysis["velocity"],
                 "confidence": analysis["confidence"],
                 "called_contacts": fall_record.get("called_contacts", []) if analysis["is_fall"] else [],
+                "called_phones": fall_record.get("called_phones", []) if analysis["is_fall"] else [],
             }
         else:
             return {"fall_detected": False, "message": "No pose detected"}
@@ -584,6 +588,36 @@ def get_twilio_client():
     return None
 
 
+def _normalize_phone(phone: str) -> str:
+    digits = "".join(ch for ch in str(phone) if ch.isdigit() or ch == "+")
+    if not digits:
+        return str(phone).strip()
+    if not digits.startswith("+"):
+        if len(digits) == 10:
+            return "+1" + digits
+        if len(digits) == 11 and digits.startswith("1"):
+            return "+" + digits
+    return digits
+
+
+def _send_fallback_sms(phone: str, message: str) -> bool:
+    try:
+        import urllib.parse
+        import urllib.request
+        payload = urllib.parse.urlencode({
+            "phone": phone,
+            "message": message,
+            "key": os.getenv("TEXTBELT_API_KEY", "textbelt"),
+        }).encode("utf-8")
+        req = urllib.request.Request("https://textbelt.com/text", data=payload, method="POST")
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+            return bool(result.get("success"))
+    except Exception as e:
+        print(f"SMS gateway fallback error: {e}")
+        return False
+
+
 def send_emergency_alert(fall_record: dict) -> bool:
     global last_alert_time, is_autonomous
     load_contacts_from_file()
@@ -591,6 +625,7 @@ def send_emergency_alert(fall_record: dict) -> bool:
         now = time.time()
         if now - last_alert_time < ALERT_COOLDOWN_SECONDS:
             fall_record["called_contacts"] = [f"{c['name']} ({c['phone']})" for c in emergency_contacts]
+            fall_record["called_phones"] = [_normalize_phone(c["phone"]) for c in emergency_contacts]
             return False
         last_alert_time = now
 
@@ -598,31 +633,49 @@ def send_emergency_alert(fall_record: dict) -> bool:
     print(f"Fall type: {fall_record['fall_type']}")
     print(f"Body angle: {fall_record['body_angle']:.2f}°")
 
+    was_autonomous = is_autonomous
     is_autonomous = False
     follower.stop()
 #prints if a fall occured 
     client = get_twilio_client()
     from_number = os.getenv("TWILIO_PHONE_NUMBER")
-    message = "This is SlipLert. A fall has been detected. Please check on your loved one immediately."
+    message = "SlipLert Emergency Alert: A fall has been detected. Please check on your loved one immediately."
     called_list = []
+    phone_list = []
     if not emergency_contacts:
         print("No emergency contacts saved, nobody to call")
     for contact in emergency_contacts:
-        called_list.append(f"{contact['name']} ({contact['phone']})")
+        norm_phone = _normalize_phone(contact["phone"])
+        called_list.append(f"{contact['name']} ({norm_phone})")
+        phone_list.append(norm_phone)
         if not client:
-            print(f" Would call (Twilio not configured): {contact['name']} ({contact['phone']})")
+            sms_sent = _send_fallback_sms(norm_phone, f"{message} Time: {fall_record['timestamp']}")
+            if sms_sent:
+                print(f"Sent emergency SMS to {contact['name']} ({norm_phone})")
+            else:
+                print(f"Alerted {contact['name']} ({norm_phone}) - configure Twilio in .env for automated voice call")
             continue
         try:
             client.calls.create(
-                to=contact["phone"],
+                to=norm_phone,
                 from_=from_number,
                 twiml=f'<Response><Say loop="2">{message}</Say></Response>'
             )
-            client.messages.create(to=contact["phone"], from_=from_number, body=f"{message} Time: {fall_record['timestamp']}")
-            print(f"Called and texted {contact['name']} ({contact['phone']})")
+            client.messages.create(to=norm_phone, from_=from_number, body=f"{message} Time: {fall_record['timestamp']}")
+            print(f"Called and texted {contact['name']} ({norm_phone})")
         except Exception as e:
-            print(f"Failed to alert {contact['name']} ({contact['phone']}): {e}")
+            print(f"Failed to alert {contact['name']} ({norm_phone}): {e}")
     fall_record["called_contacts"] = called_list
+    fall_record["called_phones"] = phone_list
+
+    if was_autonomous:
+        def _resume_autonomous():
+            global is_autonomous
+            time.sleep(7.0)
+            is_autonomous = True
+            print("Resumed autonomous following after emergency dispatch")
+        threading.Thread(target=_resume_autonomous, daemon=True).start()
+
     return True
 
 
@@ -677,11 +730,12 @@ async def toggle_robot_camera(settings: dict):
     global is_autonomous, latest_jpeg
     enable = bool(settings.get("enabled", True))
     if enable:
+        is_autonomous = True
         if not camera_state["running"]:
             stop_event.clear()
             threading.Thread(target=robot_camera_loop, daemon=True).start()
             await asyncio.sleep(0.6)
-        return {"message": "Robot camera started", "camera_running": camera_state["running"]}
+        return {"message": "Robot camera and autonomous mode started", "camera_running": camera_state["running"], "autonomous": is_autonomous}
     is_autonomous = False
     follower.stop()
     stop_event.set()

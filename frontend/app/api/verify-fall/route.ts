@@ -45,6 +45,7 @@ export async function POST(request: NextRequest) {
       confidence: data.confidence,
       bodyAngle: data.body_angle,
       calledContacts: data.called_contacts || [],
+      calledPhones: data.called_phones || [],
     });
   } catch (error) {
     console.error('Error verifying fall:', error);
