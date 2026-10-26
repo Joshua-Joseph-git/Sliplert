@@ -36,9 +36,9 @@ class AutonomousController:
                 print(f"Robot GPIO initialization failed: {e}") #ERROR CODE IF THE CODE WRITTEN DOSEN"T WORK
 
         # Control parameters
-        self.target_distance = float(os.getenv("FOLLOW_TARGET_CM", 120))  # cm - the distance we want for the person so they don't collide
-        self.min_distance = float(os.getenv("FOLLOW_MIN_CM", 60))  # cm - minimum safe distance
-        self.max_distance = 400  # cm - maximum distance to track
+        self.target_distance = float(os.getenv("FOLLOW_TARGET_CM", 45))  # cm - the distance we want for the person so they don't collide
+        self.min_distance = float(os.getenv("FOLLOW_MIN_CM", 25))  # cm - minimum safe distance
+        self.max_distance = 1000  # cm - maximum distance to track
         self.follow_speed = float(os.getenv("FOLLOW_SPEED", 1.0))  # Full speed so motors don't stall/buzz
         self.turn_speed = float(os.getenv("TURN_SPEED", 1.0))  # Full power when turning
         self.is_running = False
@@ -93,16 +93,19 @@ class AutonomousController:
         if not self.is_running:
             return {"action": "stop"}
 
-        # Get torso center (midpoint of shoulders and hips)#Media pose landmark, marking were these positions are
+        # Get torso center (midpoint of shoulders, or shoulders + hips if visible)#Media pose landmark, marking were these positions are
         #so when/if they fall can decect it
         left_shoulder = landmarks[pose_utils.LEFT_SHOULDER]
         right_shoulder = landmarks[pose_utils.RIGHT_SHOULDER]
         left_hip = landmarks[pose_utils.LEFT_HIP]
         right_hip = landmarks[pose_utils.RIGHT_HIP]
 
-        # Calculate center of mass in image coordinates
-        center_x = (left_shoulder.x + right_shoulder.x + left_hip.x + right_hip.x) / 4
-        center_y = (left_shoulder.y + right_shoulder.y + left_hip.y + right_hip.y) / 4
+        if pose_utils.visibility(left_hip) > 0.45 and pose_utils.visibility(right_hip) > 0.45:
+            center_x = (left_shoulder.x + right_shoulder.x + left_hip.x + right_hip.x) / 4
+            center_y = (left_shoulder.y + right_shoulder.y + left_hip.y + right_hip.y) / 4
+        else:
+            center_x = (left_shoulder.x + right_shoulder.x) / 2
+            center_y = (left_shoulder.y + right_shoulder.y) / 2
 
         # Estimate distance based on person size (shoulder width)
         shoulder_width = abs(left_shoulder.x - right_shoulder.x)
@@ -176,7 +179,7 @@ class AutonomousController:
             commands["action"] = "adjust"
 
         # Direction control
-        if abs(horizontal_offset) > 0.1:  # More than 10% off center
+        if abs(horizontal_offset) > 0.22:  # More than 22% off center -> turn toward person
             if horizontal_offset > 0:
                 # Person to the right - turn right
                 commands["turn"] = -self.turn_speed
