@@ -2,7 +2,9 @@
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
 
-const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+const DEFAULT_BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+const getBackendUrl = () =>
+  (typeof window !== 'undefined' && window.localStorage.getItem('sliplert_backend_url')) || DEFAULT_BACKEND_URL;
 
 type EmergencyContact = {
   id: number;
@@ -27,7 +29,7 @@ export default function Home() {
 
   const loadContacts = async () => {
     try {
-      const response = await fetch(`${BACKEND_URL}/emergency-contacts`);
+      const response = await fetch(`${getBackendUrl()}/emergency-contacts`);
       if (!response.ok) return;
       const data = await response.json();
       setContacts(data.contacts || []);
@@ -43,7 +45,7 @@ export default function Home() {
     }
 
     try {
-      const response = await fetch(`${BACKEND_URL}/emergency-contacts`, {
+      const response = await fetch(`${getBackendUrl()}/emergency-contacts`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(newContact),
@@ -68,7 +70,7 @@ export default function Home() {
     if (!confirm('Delete this contact?')) return;
 
     try {
-      const response = await fetch(`${BACKEND_URL}/emergency-contacts/${id}`, {
+      const response = await fetch(`${getBackendUrl()}/emergency-contacts/${id}`, {
         method: 'DELETE',
       });
 

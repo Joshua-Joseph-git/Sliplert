@@ -2,7 +2,7 @@
 import { useRef, useEffect, useState } from 'react';
 import Link from 'next/link';
 
-const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+const DEFAULT_BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
 
 type RobotStatus = {
   autonomous: boolean;
@@ -19,6 +19,9 @@ export default function CameraDashboard() {
   const [robot, setRobot] = useState<RobotStatus | null>(null);
   const [feed, setFeed] = useState<'laptop' | 'robot'>('laptop');
   const [robotBusy, setRobotBusy] = useState(false);
+  const [backendUrl, setBackendUrl] = useState(DEFAULT_BACKEND_URL);
+  const [urlInput, setUrlInput] = useState(DEFAULT_BACKEND_URL);
+  const [connected, setConnected] = useState(true);
   const [systemLog, setSystemLog] = useState<string[]>([
     'System initialized.',
     'Robot WebSocket link standing by.',
@@ -59,9 +62,21 @@ export default function CameraDashboard() {
   }, []);
 
   useEffect(() => {
+    const saved = window.localStorage.getItem('sliplert_backend_url');
+    if (saved) {
+      setBackendUrl(saved);
+      setUrlInput(saved);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!connected) {
+      setRobot(null);
+      return;
+    }
     const checkRobot = async () => {
       try {
-        const response = await fetch(`${BACKEND_URL}/robot/status`, { signal: AbortSignal.timeout(2000) });
+        const response = await fetch(`${backendUrl}/robot/status`, { signal: AbortSignal.timeout(2000) });
         setRobot(response.ok ? await response.json() : null);
       } catch {
         setRobot(null);
@@ -70,14 +85,55 @@ export default function CameraDashboard() {
     checkRobot();
     const poll = setInterval(checkRobot, 2000);
     return () => clearInterval(poll);
-  }, []);
+  }, [backendUrl, connected]);
+
+  const toggleConnection = async () => {
+    if (connected && robot) {
+      try {
+        await fetch(`${backendUrl}/robot/camera`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled: false }),
+        });
+      } catch {}
+      setConnected(false);
+      setRobot(null);
+      setFeed('laptop');
+      addLog('Disconnected from Raspberry Pi / backend.');
+      return;
+    }
+    const clean = urlInput.trim().replace(/\/+$/, '') || DEFAULT_BACKEND_URL;
+    const finalUrl = clean.startsWith('http') ? clean : `http://${clean}${clean.includes(':') ? '' : ':8000'}`;
+    setBackendUrl(finalUrl);
+    setUrlInput(finalUrl);
+    window.localStorage.setItem('sliplert_backend_url', finalUrl);
+    setConnected(true);
+    try {
+      await fetch(`${finalUrl}/robot/camera`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: true }),
+      });
+      const res = await fetch(`${finalUrl}/robot/status`, { signal: AbortSignal.timeout(2500) });
+      if (res.ok) {
+        const data = await res.json();
+        setRobot(data);
+        if (data.camera_running) setFeed('robot');
+        addLog(`Connected to robot at ${finalUrl}.`);
+      } else {
+        addLog(`Could not reach ${finalUrl}.`);
+      }
+    } catch {
+      addLog(`Could not reach ${finalUrl} — check Pi IP or start backend.`);
+    }
+  };
 
   const toggleFollowing = async () => {
     if (!robot) return;
     setRobotBusy(true);
     const enable = !robot.autonomous;
     try {
-      const response = await fetch(`${BACKEND_URL}/robot/autonomous`, {
+      const response = await fetch(`${backendUrl}/robot/autonomous`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ enabled: enable }),
@@ -141,7 +197,7 @@ export default function CameraDashboard() {
 
   const simulateSensorSignal = async () => {
     setStatus('EVALUATING');
-    addLog('Anomalous horizontal shift detected. Querying Claude AI...');
+    addLog('Anomalous horizontal shift detected. Querying MediaPipe AI...');
     
     try {
       const response = await fetch('/api/verify-fall', {
@@ -155,10 +211,10 @@ export default function CameraDashboard() {
       
       if (data.confirmedFall) {
         setStatus('ALERT_TRIGGERED');
-        addLog('⚠️ CRITICAL: Claude verified a fall! Twilio emergency dispatch fired.');
+        addLog('⚠️ CRITICAL: MediaPipe verified a fall! Twilio emergency dispatch fired.');
       } else {
         setStatus('SAFE');
-        addLog('False alarm. Claude verified orientation as upright.');
+        addLog('False alarm. MediaPipe verified orientation as upright.');
         setTimeout(() => setStatus('ONLINE'), 3000);
       }
     } catch {
@@ -202,7 +258,7 @@ export default function CameraDashboard() {
             <canvas ref={canvasRef} className="absolute top-0 left-0 w-full h-full pointer-events-none" />
             
             {feed === 'robot' && robot?.camera_running && (
-              <img src={`${BACKEND_URL}/video_feed`} alt="Robot camera" className="absolute inset-0 w-full h-full object-cover" />
+              <img src={`${backendUrl}/video_feed`} alt="Robot camera" className="absolute inset-0 w-full h-full object-cover" />
             )}
 
             {feed === 'laptop' && !videoRef.current?.srcObject && (
@@ -219,7 +275,7 @@ export default function CameraDashboard() {
             {status === 'ALERT_TRIGGERED' && (
               <div className="absolute inset-0 bg-red-600/20 border-4 border-red-500 animate-pulse flex items-center justify-center pointer-events-none">
                 <div className="bg-slate-950/90 text-red-400 font-bold px-6 py-3 rounded-lg border border-red-500/50 text-center tracking-widest text-sm">
-                  ⚠️ FALL PATTERN CONFIRMED BY CLAUDE
+                  ⚠️ FALL PATTERN CONFIRMED BY MEDIAPIPE
                 </div>
               </div>
             )}
@@ -244,13 +300,33 @@ export default function CameraDashboard() {
         <div className="flex flex-col space-y-6">
 
           <div className="bg-slate-900 border border-slate-800 p-6 rounded-xl shadow-xl">
-            <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center justify-between mb-3">
               <h2 className="text-lg font-bold text-slate-200">Robot Control</h2>
-              {robot ? (
+              {connected && robot ? (
                 <span className="px-3 py-1 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">ROBOT ONLINE</span>
               ) : (
                 <span className="px-3 py-1 rounded-full text-xs font-semibold bg-slate-800 text-slate-500 border border-slate-700">ROBOT OFFLINE</span>
               )}
+            </div>
+
+            <div className="flex gap-2 mb-3">
+              <input
+                type="text"
+                value={urlInput}
+                onChange={(e) => setUrlInput(e.target.value)}
+                placeholder="Pi IP (e.g. 192.168.1.42:8000)"
+                className="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono"
+              />
+              <button
+                onClick={toggleConnection}
+                className={`px-3 py-2 rounded-lg text-xs font-semibold uppercase tracking-wider transition ${
+                  connected && robot
+                    ? 'bg-red-600/20 hover:bg-red-600/30 text-red-400 border border-red-500/30'
+                    : 'bg-emerald-600 hover:bg-emerald-500 text-white'
+                }`}
+              >
+                {connected && robot ? 'Disconnect' : 'Connect'}
+              </button>
             </div>
 
             <div className="grid grid-cols-2 gap-2 text-xs mb-4">

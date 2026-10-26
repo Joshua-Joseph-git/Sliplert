@@ -2,7 +2,9 @@
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
 
-const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+const DEFAULT_BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+const getBackendUrl = () =>
+  (typeof window !== 'undefined' && window.localStorage.getItem('sliplert_backend_url')) || DEFAULT_BACKEND_URL;
 
 type EmergencyContact = {
   id: number;
@@ -26,7 +28,7 @@ export default function Settings() {
 
   const loadContacts = async () => {
     try {
-      const response = await fetch(`${BACKEND_URL}/emergency-contacts`);
+      const response = await fetch(`${getBackendUrl()}/emergency-contacts`);
       if (!response.ok) {
         console.error('Backend response not OK:', response.status);
         return;
@@ -35,7 +37,7 @@ export default function Settings() {
       setContacts(data.contacts || []);
     } catch (error) {
       console.error('Failed to load contacts:', error);
-      alert(`Failed to connect to backend. Make sure the backend is running on ${BACKEND_URL}`);
+      alert(`Failed to connect to backend. Make sure the backend is running on ${getBackendUrl()}`);
     }
   };
 
@@ -46,7 +48,7 @@ export default function Settings() {
     }
 
     try {
-      const response = await fetch(`${BACKEND_URL}/emergency-contacts`, {
+      const response = await fetch(`${getBackendUrl()}/emergency-contacts`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(newContact),
@@ -64,7 +66,7 @@ export default function Settings() {
       }
     } catch (error) {
       console.error('Failed to add contact:', error);
-      alert(`Failed to connect to backend. Make sure the backend is running on ${BACKEND_URL}`);
+      alert(`Failed to connect to backend. Make sure the backend is running on ${getBackendUrl()}`);
     }
   };
 
@@ -72,7 +74,7 @@ export default function Settings() {
     if (!confirm('Are you sure you want to delete this contact?')) return;
 
     try {
-      const response = await fetch(`${BACKEND_URL}/emergency-contacts/${id}`, {
+      const response = await fetch(`${getBackendUrl()}/emergency-contacts/${id}`, {
         method: 'DELETE',
       });
 
@@ -85,7 +87,7 @@ export default function Settings() {
       }
     } catch (error) {
       console.error('Failed to delete contact:', error);
-      alert(`Failed to connect to backend. Make sure the backend is running on ${BACKEND_URL}`);
+      alert(`Failed to connect to backend. Make sure the backend is running on ${getBackendUrl()}`);
     }
   };
 

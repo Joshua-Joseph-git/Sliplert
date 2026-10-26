@@ -578,12 +578,28 @@ async def toggle_autonomous(settings: dict):
     """Toggle autonomous mode"""
     global is_autonomous
     is_autonomous = bool(settings.get("enabled", False))
+    if is_autonomous and not camera_state["running"]:
+        stop_event.clear()
+        threading.Thread(target=robot_camera_loop, daemon=True).start()
     if not is_autonomous:
         follower.stop()
     message = f"Autonomous mode {'enabled' if is_autonomous else 'disabled'}"
-    if is_autonomous and not camera_state["running"]:
-        message += " (warning: robot camera is not running)"
     return {"message": message, "status": is_autonomous}
+
+@app.post("/robot/camera")
+async def toggle_robot_camera(settings: dict):
+    global is_autonomous
+    enable = bool(settings.get("enabled", True))
+    if enable:
+        if not camera_state["running"]:
+            stop_event.clear()
+            threading.Thread(target=robot_camera_loop, daemon=True).start()
+            await asyncio.sleep(0.6)
+        return {"message": "Robot camera started", "camera_running": camera_state["running"]}
+    is_autonomous = False
+    follower.stop()
+    stop_event.set()
+    return {"message": "Robot camera stopped", "camera_running": False}
 
 @app.get("/robot/status")
 async def get_robot_status():
