@@ -31,7 +31,7 @@ class AutonomousController:
         self.robot = robot
         if create_hardware and robot is None and GPIO_AVAILABLE:
             try:
-                self.robot = Robot(left=(17, 18), right=(22, 23))
+                self.robot = Robot(left=(17, 18), right=(22, 23), pwm=False)
             except Exception as e:
                 print(f"Robot GPIO initialization failed: {e}") #ERROR CODE IF THE CODE WRITTEN DOSEN"T WORK
 
@@ -231,26 +231,26 @@ class AutonomousController:
         if action == "forward":
             turn = commands.get("turn", 0)
             if turn > 0:
-                self.robot.left(speed=1.0)
+                self.robot.left()
             elif turn < 0:
-                self.robot.right(speed=1.0)
+                self.robot.right()
             else:
-                self.robot.forward(speed=1.0)
+                self.robot.backward()
         elif action == "backward":#DRIVING FUNCTIONS AND SPEED COORDINATED WITH THAT
-            self.robot.backward(speed=1.0)
+            self.robot.forward()
         elif action == "left":
-            self.robot.left(speed=1.0)
+            self.robot.left()
         elif action == "right":
-            self.robot.right(speed=1.0)
+            self.robot.right()
         elif action == "stop":
             self.robot.stop()
         elif action == "adjust":
             # Adjust direction while maintaining position
             turn = commands.get("turn", 0)
             if turn > 0:
-                self.robot.left(speed=1.0)
+                self.robot.left()
             elif turn < 0:
-                self.robot.right(speed=1.0)
+                self.robot.right()
             else:
                 self.robot.stop()
 

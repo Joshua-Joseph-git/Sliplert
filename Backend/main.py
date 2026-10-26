@@ -86,7 +86,8 @@ if GPIO_AVAILABLE:
     try:
         robot = Robot(
             left=(int(os.getenv("ROBOT_LEFT_FORWARD_PIN", 17)), int(os.getenv("ROBOT_LEFT_BACKWARD_PIN", 18))),
-            right=(int(os.getenv("ROBOT_RIGHT_FORWARD_PIN", 22)), int(os.getenv("ROBOT_RIGHT_BACKWARD_PIN", 23)))
+            right=(int(os.getenv("ROBOT_RIGHT_FORWARD_PIN", 22)), int(os.getenv("ROBOT_RIGHT_BACKWARD_PIN", 23))),
+            pwm=False
         )
         print("Robot GPIO initialized")
     except Exception as e:
@@ -316,6 +317,7 @@ def robot_camera_loop():
         timestamp_ms = 0
         confirm_frames = int(os.getenv("FALL_CONFIRM_FRAMES", 3))
         fall_streak = 0
+        lost_frames = 0
         last_tick = time.time()
         camera_state["running"] = True
         print("Robot camera loop running")
@@ -334,6 +336,7 @@ def robot_camera_loop():
                 camera_state["running"] = True
 
                 if visible:
+                    lost_frames = 0
                     analysis = loop_detector.analyze_pose(landmarks)
                     angle = float(analysis.get("body_angle", 0.0))
                     camera_state["body_angle"] = round(angle, 1)
@@ -356,7 +359,9 @@ def robot_camera_loop():
                         follower.is_running = True
                         follower.follow_landmarks(landmarks)
                 elif is_autonomous:
-                    follower.lose_person()
+                    lost_frames += 1
+                    if lost_frames >= 15:
+                        follower.lose_person()
 
                 if not is_autonomous and follower.is_running:
                     follower.stop()
@@ -478,6 +483,27 @@ async def detect_fall(file: UploadFile = File(...)):
 async def detect_fall_base64(data: dict):
     """Detect fall from base64 encoded image"""
     try:
+        incoming_contacts = data.get("contacts")
+        if isinstance(incoming_contacts, list) and len(incoming_contacts) > 0:
+            load_contacts_from_file()
+            existing_phones = {_normalize_phone(c.get("phone", "")) for c in emergency_contacts}
+            added_any = False
+            for c in incoming_contacts:
+                if isinstance(c, dict) and c.get("name") and c.get("phone"):
+                    p = _normalize_phone(c["phone"])
+                    if p not in existing_phones:
+                        emergency_contacts.append({
+                            "id": max((x["id"] for x in emergency_contacts), default=0) + 1,
+                            "name": c["name"],
+                            "phone": c["phone"],
+                            "relationship": c.get("relationship", "Emergency Contact"),
+                            "created_at": datetime.now().isoformat(),
+                        })
+                        existing_phones.add(p)
+                        added_any = True
+            if added_any:
+                save_contacts_to_file()
+
         if data.get("coordinates") or data.get("simulate"):
             fall_record = {
                 "timestamp": datetime.now().isoformat(),
@@ -695,22 +721,24 @@ async def trigger_emergency_alert(fall_record: dict):
 @app.post("/robot/control")
 async def control_robot(command: dict):
     """Control the robot"""
+    global is_autonomous
     action = command.get("action")
-    speed = command.get("speed", 100)
+
+    is_autonomous = False
+    follower.is_running = False
 
     if not robot:
         return {"message": "Robot not available (GPIO not initialized)", "status": "simulation"}
 
     try:#More driving functions
-        motor_speed = min(1.0, max(0.8, speed / 100))
         if action == "forward":
-            robot.forward(speed=motor_speed)
+            robot.forward()
         elif action == "backward":
-            robot.backward(speed=motor_speed)
+            robot.backward()
         elif action == "left":
-            robot.left(speed=motor_speed)
+            robot.left()
         elif action == "right":
-            robot.right(speed=motor_speed)
+            robot.right()
         elif action == "stop":
             robot.stop()
         else:

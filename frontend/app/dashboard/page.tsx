@@ -169,6 +169,21 @@ export default function CameraDashboard() {
     setConnected(true);
     setStreamKey(prev => prev + 1);
     try {
+      const savedContacts = JSON.parse(window.localStorage.getItem('sliplert_contacts') || '[]');
+      if (Array.isArray(savedContacts) && savedContacts.length > 0) {
+        const existingRes = await fetch(`${finalUrl}/emergency-contacts`, { signal: AbortSignal.timeout(2500) });
+        const existingData = existingRes.ok ? await existingRes.json() : { contacts: [] };
+        const existingPhones = new Set((existingData.contacts || []).map((c: { phone: string }) => c.phone));
+        for (const c of savedContacts) {
+          if (c.name && c.phone && !existingPhones.has(c.phone)) {
+            await fetch(`${finalUrl}/emergency-contacts`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ name: c.name, phone: c.phone, relationship: c.relationship || 'Family' }),
+            });
+          }
+        }
+      }
       await fetch(`${finalUrl}/robot/camera`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -183,7 +198,7 @@ export default function CameraDashboard() {
       if (res.ok) {
         const data = await res.json();
         setRobot(data);
-        addLog(`Connected to robot car at ${finalUrl} — full motor power & autonomous mode active.`);
+        addLog(`Connected to robot car at ${finalUrl} — contacts synced & autonomous mode active.`);
       } else {
         addLog(`Could not reach ${finalUrl}.`);
       }
@@ -220,7 +235,8 @@ export default function CameraDashboard() {
         body: JSON.stringify({ action, speed: 100 }),
       });
       const data = await response.json();
-      addLog(`Motor test: ${action.toUpperCase()} (${data.status || 'sent'}).`);
+      setRobot(prev => (prev ? { ...prev, autonomous: false } : prev));
+      addLog(`Motor drive: ${action.toUpperCase()} (${data.status || 'sent'}).`);
     } catch {
       addLog(`Failed to send ${action} command to robot.`);
     }
@@ -229,6 +245,10 @@ export default function CameraDashboard() {
   const simulateSensorSignal = async () => {
     setStatus('EVALUATING');
     addLog('Anomalous horizontal shift detected. Querying MediaPipe AI...');
+    let savedContacts = [];
+    try {
+      savedContacts = JSON.parse(window.localStorage.getItem('sliplert_contacts') || '[]');
+    } catch {}
     
     try {
       const response = await fetch('/api/verify-fall', {
@@ -237,6 +257,7 @@ export default function CameraDashboard() {
         body: JSON.stringify({
           simulate: true,
           backendUrl: backendUrlRef.current || 'http://localhost:8000',
+          contacts: savedContacts,
           coordinates: { head: { x: 120, y: 480 }, feet: { x: 500, y: 490 } }
         }),
       });
@@ -417,7 +438,7 @@ export default function CameraDashboard() {
                   disabled={!robot}
                   className="py-2 bg-slate-950 hover:bg-indigo-600 border border-slate-800 rounded-lg font-semibold transition disabled:opacity-40"
                 >
-                  ▲ Fwd
+                  ▲ Backward
                 </button>
                 <div />
                 <button
@@ -447,7 +468,7 @@ export default function CameraDashboard() {
                   disabled={!robot}
                   className="py-2 bg-slate-950 hover:bg-indigo-600 border border-slate-800 rounded-lg font-semibold transition disabled:opacity-40"
                 >
-                  ▼ Back
+                  ▼ Forward
                 </button>
                 <div />
               </div>
