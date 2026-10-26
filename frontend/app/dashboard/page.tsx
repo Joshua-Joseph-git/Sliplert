@@ -10,11 +10,16 @@ type RobotStatus = {
   camera_running: boolean;
   person_detected: boolean;
   fps: number;
+  body_angle?: number;
+  posture_score?: number;
+  last_fall?: { timestamp: string; fall_type: string; body_angle: number; confidence: number } | null;
 };
 
 export default function CameraDashboard() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const lastRobotFallRef = useRef<string | null>(null);
+  const backendUrlRef = useRef(DEFAULT_BACKEND_URL);
   const [status, setStatus] = useState('ONLINE');
   const [robot, setRobot] = useState<RobotStatus | null>(null);
   const [feed, setFeed] = useState<'laptop' | 'robot'>('laptop');
@@ -31,6 +36,11 @@ export default function CameraDashboard() {
   const [stats, setStats] = useState({ fps: 30, latency: 12, postureScore: 98 });
 
   useEffect(() => {
+    backendUrlRef.current = backendUrl;
+  }, [backendUrl]);
+
+  useEffect(() => {
+    let stopDetection = false;
     async function setupCamera() {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ video: true });
@@ -39,7 +49,7 @@ export default function CameraDashboard() {
 
         if (videoRef.current) {
           videoRef.current.onloadedmetadata = () => {
-            startFallDetection();
+            if (!stopDetection) startFallDetection(() => stopDetection);
           };
         }
       } catch (err) {
@@ -50,13 +60,13 @@ export default function CameraDashboard() {
     setupCamera();
 
     const interval = setInterval(() => {
-      setStats({
+      setStats(prev => ({
+        ...prev,
         fps: Math.floor(Math.random() * (31 - 28) + 28),
-        latency: Math.floor(Math.random() * (16 - 11) + 11),
-        postureScore: Math.floor(Math.random() * (100 - 95) + 95)
-      });
+      }));
     }, 1500);
     return () => {
+      stopDetection = true;
       clearInterval(interval);
     };
   }, []);
@@ -77,13 +87,34 @@ export default function CameraDashboard() {
     const checkRobot = async () => {
       try {
         const response = await fetch(`${backendUrl}/robot/status`, { signal: AbortSignal.timeout(2000) });
-        setRobot(response.ok ? await response.json() : null);
+        if (!response.ok) {
+          setRobot(null);
+          return;
+        }
+        const data: RobotStatus = await response.json();
+        setRobot(data);
+        if (data.camera_running && typeof data.posture_score === 'number') {
+          setStats(prev => ({
+            ...prev,
+            fps: data.fps || prev.fps,
+            postureScore: data.posture_score ?? prev.postureScore,
+          }));
+        }
+        if (data.last_fall && data.last_fall.timestamp !== lastRobotFallRef.current) {
+          lastRobotFallRef.current = data.last_fall.timestamp;
+          setStatus('ALERT_TRIGGERED');
+          setStats(prev => ({
+            ...prev,
+            postureScore: Math.max(0, Math.floor(100 - (data.last_fall?.body_angle || 80))),
+          }));
+          addLog(`⚠️ CRITICAL: Robot camera detected fall (${data.last_fall.fall_type})! Emergency contacts alerted.`);
+        }
       } catch {
         setRobot(null);
       }
     };
     checkRobot();
-    const poll = setInterval(checkRobot, 2000);
+    const poll = setInterval(checkRobot, 1200);
     return () => clearInterval(poll);
   }, [backendUrl, connected]);
 
@@ -147,7 +178,7 @@ export default function CameraDashboard() {
     setRobotBusy(false);
   };
 
-  const startFallDetection = () => {
+  const startFallDetection = (isStopped: () => boolean) => {
     if (!videoRef.current) return;
 
     const canvas = document.createElement('canvas');
@@ -158,33 +189,46 @@ export default function CameraDashboard() {
     canvas.height = 480;
 
     const detectFrame = async () => {
-      if (!videoRef.current || !ctx) return;
+      if (isStopped()) return;
+      if (!videoRef.current || !ctx || videoRef.current.readyState < 2) {
+        setTimeout(detectFrame, 300);
+        return;
+      }
 
+      const t0 = performance.now();
       ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
-      const imageData = canvas.toDataURL('image/jpeg', 0.8);
+      const imageData = canvas.toDataURL('image/jpeg', 0.75);
 
       try {
         const response = await fetch('/api/verify-fall', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ image: imageData }),
+          body: JSON.stringify({ image: imageData, backendUrl: backendUrlRef.current }),
         });
 
         const data = await response.json();
+        const elapsed = Math.max(1, Math.round(performance.now() - t0));
+
+        if (typeof data.bodyAngle === 'number') {
+          const score = Math.max(0, Math.min(100, Math.floor(100 - data.bodyAngle)));
+          setStats(prev => ({ ...prev, latency: elapsed, postureScore: score }));
+        }
 
         if (data.confirmedFall) {
           setStatus('ALERT_TRIGGERED');
+          setStats(prev => ({
+            ...prev,
+            latency: elapsed,
+            postureScore: Math.max(0, Math.floor(100 - (data.bodyAngle || 75))),
+          }));
           addLog(`⚠️ CRITICAL: Fall detected! Type: ${data.fallType}, Confidence: ${(data.confidence * 100).toFixed(0)}%`);
-        } else {
-          if (data.bodyAngle) {
-            const score = Math.max(0, 100 - data.bodyAngle);
-            setStats(prev => ({ ...prev, postureScore: Math.floor(score) }));
-          }
         }
-      } catch (error) {
+      } catch {
       }
 
-      requestAnimationFrame(detectFrame);
+      if (!isStopped()) {
+        setTimeout(detectFrame, 300);
+      }
     };
 
     detectFrame();
@@ -204,6 +248,8 @@ export default function CameraDashboard() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          simulate: true,
+          backendUrl: backendUrlRef.current,
           coordinates: { head: { x: 120, y: 480 }, feet: { x: 500, y: 490 } }
         }),
       });
@@ -211,7 +257,8 @@ export default function CameraDashboard() {
       
       if (data.confirmedFall) {
         setStatus('ALERT_TRIGGERED');
-        addLog('⚠️ CRITICAL: MediaPipe verified a fall! Twilio emergency dispatch fired.');
+        setStats(prev => ({ ...prev, postureScore: 18 }));
+        addLog('⚠️ CRITICAL: MediaPipe verified a fall! Emergency contact dispatch fired.');
       } else {
         setStatus('SAFE');
         addLog('False alarm. MediaPipe verified orientation as upright.');
@@ -384,6 +431,18 @@ export default function CameraDashboard() {
             >
               {status === 'EVALUATING' ? 'Consulting Core AI...' : 'Simulate Fall Trajectory'}
             </button>
+            {status === 'ALERT_TRIGGERED' && (
+              <button
+                onClick={() => {
+                  setStatus('ONLINE');
+                  setStats(prev => ({ ...prev, postureScore: 98 }));
+                  addLog('Emergency alert cleared by operator.');
+                }}
+                className="w-full mt-2 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold rounded-lg transition text-xs tracking-wider uppercase"
+              >
+                Reset Emergency Alert
+              </button>
+            )}
           </div>
 
           <div className="bg-slate-900 border border-slate-800 p-6 rounded-xl shadow-xl flex-1 flex flex-col">

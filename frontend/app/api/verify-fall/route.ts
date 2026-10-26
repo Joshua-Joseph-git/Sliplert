@@ -3,25 +3,33 @@ import { NextRequest, NextResponse } from 'next/server';
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
+    const targetUrl = body.backendUrl || process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
 
-    // Try to connect to backend
     let response;
     try {
-      response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000'}/detect-fall-base64`, {
+      response = await fetch(`${targetUrl}/detect-fall-base64`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(body),
       });
-    } catch (fetchError) {
-      // Backend not running - return mock response for demo
+    } catch {
+      if (body.coordinates || body.simulate) {
+        return NextResponse.json({
+          confirmedFall: true,
+          fallType: 'simulated_fall',
+          confidence: 0.98,
+          bodyAngle: 82,
+          mock: true,
+        });
+      }
       return NextResponse.json({
         confirmedFall: false,
         fallType: null,
         confidence: 0,
         bodyAngle: 0,
-        mock: true
+        mock: true,
       });
     }
 
@@ -44,7 +52,7 @@ export async function POST(request: NextRequest) {
       fallType: null,
       confidence: 0,
       bodyAngle: 0,
-      error: 'Failed to verify fall'
+      error: 'Failed to verify fall',
     });
   }
 }
