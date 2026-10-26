@@ -29,6 +29,7 @@ export default function CameraDashboard() {
   const [status, setStatus] = useState('ONLINE');
   const [alertMessage, setAlertMessage] = useState('FALL PATTERN CONFIRMED BY MEDIAPIPE');
   const [alertPhones, setAlertPhones] = useState<string[]>([]);
+  const [sentEmails, setSentEmails] = useState<Array<{ to: string; subject: string; time: string; body: string }>>([]);
   const [robot, setRobot] = useState<RobotStatus | null>(null);
   const [robotBusy, setRobotBusy] = useState(false);
   const [backendUrl, setBackendUrl] = useState(DEFAULT_BACKEND_URL);
@@ -72,6 +73,14 @@ export default function CameraDashboard() {
     setAlertPhones(phones);
     setAlertMessage(`FALL DETECTED (${fallType.toUpperCase()}) — EMAIL DISPATCHED TO ${who.toUpperCase()}`);
     addLog(`CRITICAL: Fall detected (${fallType})! Stopping robot & emailing ${who}...`);
+
+    const subject = 'URGENT: SlipLert Fall Detected - Check on Your Loved One';
+    const nowStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const bodyText = `SlipLert detected a confirmed fall (${fallType}, angle ${Math.round(bodyAngle || 80)} deg) at ${nowStr}. The autonomous robot car has stopped safely next to your loved one. Please check on them immediately.`;
+    setSentEmails(prev => [
+      { to: phones.length > 0 ? phones.join(', ') : who, subject, time: nowStr, body: bodyText },
+      ...prev.slice(0, 3),
+    ]);
 
     for (const target of phones) {
       const trimmed = (target || '').trim();
@@ -216,11 +225,16 @@ export default function CameraDashboard() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ enabled: true }),
       });
+      await fetch(`${finalUrl}/robot/autonomous`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: true }),
+      });
       const res = await fetch(`${finalUrl}/robot/status`, { signal: AbortSignal.timeout(3000) });
       if (res.ok) {
         const data = await res.json();
         setRobot(data);
-        addLog(`Connected to robot car at ${finalUrl} — ready to drive or start following.`);
+        addLog(`Connected to robot car at ${finalUrl} — autonomous following started.`);
       } else {
         addLog(`Could not reach ${finalUrl}.`);
       }
@@ -384,6 +398,43 @@ export default function CameraDashboard() {
               <div className="text-xs text-slate-500 uppercase tracking-wider">Stability Rating</div>
               <div className="text-lg font-bold text-indigo-400 mt-1">{stats.postureScore}%</div>
             </div>
+          </div>
+
+          <div className="bg-slate-900 border border-slate-800 p-5 rounded-xl font-mono">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-sm font-bold text-slate-300 uppercase tracking-widest">Emergency Email Outbox</h2>
+              <span className="text-xs text-emerald-400">{sentEmails.length} Dispatched</span>
+            </div>
+            {sentEmails.length === 0 ? (
+              <div className="text-xs text-slate-500 py-2">
+                No emergency emails sent yet. When MediaPipe detects a fall, the email dispatch log appears here automatically.
+              </div>
+            ) : (
+              <div className="space-y-2.5">
+                {sentEmails.map((em, i) => (
+                  <div key={i} className="bg-slate-950 border border-slate-800 rounded-lg p-3 text-xs space-y-1">
+                    <div className="flex justify-between items-center">
+                      <span className="text-indigo-400 font-semibold">TO: {em.to}</span>
+                      <span className="text-emerald-400 font-semibold">SENT · {em.time}</span>
+                    </div>
+                    <div className="text-slate-200 font-medium">{em.subject}</div>
+                    <div className="text-slate-400">{em.body}</div>
+                    {em.to.includes('@') && (
+                      <div className="pt-1">
+                        <a
+                          href={`https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(em.to.split(',')[0].trim())}&su=${encodeURIComponent(em.subject)}&body=${encodeURIComponent(em.body)}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-block px-2.5 py-1 bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-300 border border-indigo-500/30 rounded text-[11px] uppercase tracking-wider"
+                        >
+                          Open in Gmail Web
+                        </a>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
 

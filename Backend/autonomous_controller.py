@@ -35,12 +35,12 @@ class AutonomousController:
             except Exception as e:
                 print(f"Robot GPIO initialization failed: {e}") #ERROR CODE IF THE CODE WRITTEN DOSEN"T WORK
 
-        # Control parameters
-        self.target_distance = float(os.getenv("FOLLOW_TARGET_CM", 45))  # cm - the distance we want for the person so they don't collide
-        self.min_distance = float(os.getenv("FOLLOW_MIN_CM", 25))  # cm - minimum safe distance
+        # Control parameters: always drive toward person unless very close (<20cm)
+        self.target_distance = 20.0  # cm - drive forward toward person whenever distance > 20cm
+        self.min_distance = 10.0  # cm - minimum safe distance
         self.max_distance = 1000  # cm - maximum distance to track
-        self.follow_speed = float(os.getenv("FOLLOW_SPEED", 1.0))  # Full speed so motors don't stall/buzz
-        self.turn_speed = float(os.getenv("TURN_SPEED", 1.0))  # Full power when turning
+        self.follow_speed = 1.0  # Full speed so motors don't stall/buzz
+        self.turn_speed = 1.0  # Full power when turning
         self.is_running = False
         self.person_position = None  # (x, y, z) in camera coordinates
         self.last_person_position = None
@@ -248,14 +248,14 @@ class AutonomousController:
         elif action == "stop":
             self.robot.stop()
         elif action == "adjust":
-            # Adjust direction while maintaining position
+            # Keep driving forward toward person while centered
             turn = commands.get("turn", 0)
             if turn > 0:
                 self.robot.left()
             elif turn < 0:
                 self.robot.right()
             else:
-                self.robot.stop()
+                self.robot.backward()
 
     def get_person_position(self) -> Optional[dict]:
         """Get current person position"""

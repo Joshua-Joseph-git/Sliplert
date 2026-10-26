@@ -83,7 +83,7 @@ emergency_contacts = []
 fall_history = []
 robot_position = {"x": 0, "y": 0, "angle": 0}
 camera = None
-is_autonomous = False
+is_autonomous = True
 CONTACTS_FILE = "emergency_contacts.json"
 FALL_HISTORY_FILE = "fall_history.json"
 
@@ -834,6 +834,7 @@ async def toggle_autonomous(settings: dict):
     global is_autonomous
     is_autonomous = bool(settings.get("enabled", False))
     if is_autonomous:
+        follower.is_running = True
         if robot:
             robot.backward()
         if not camera_state["running"]:
@@ -851,11 +852,15 @@ async def toggle_robot_camera(settings: dict):
     global is_autonomous, latest_jpeg
     enable = bool(settings.get("enabled", True))
     if enable:
+        is_autonomous = True
+        follower.is_running = True
+        if robot:
+            robot.backward()
         if not camera_state["running"]:
             stop_event.clear()
             threading.Thread(target=robot_camera_loop, daemon=True).start()
             await asyncio.sleep(0.6)
-        return {"message": "Robot camera started", "camera_running": camera_state["running"], "autonomous": is_autonomous}
+        return {"message": "Robot camera and autonomous following started", "camera_running": camera_state["running"], "autonomous": is_autonomous}
     is_autonomous = False
     follower.stop()
     stop_event.set()
