@@ -24,6 +24,9 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
     <html
       lang="en"
       className={`${cantarell.variable} ${mono.variable} h-full antialiased`}
+      // Browser extensions (dark mode, ad blockers, etc.) add attributes like style="opacity: initial"
+      // to <html> before React loads; ignore those instead of showing a hydration error
+      suppressHydrationWarning
     >
       <body className="min-h-full flex flex-col">{children}</body>
     </html>
