@@ -1,3 +1,6 @@
+#Start of the code for the main backend
+
+#Imports that are going to be used listed below, rember to credit them for vid
 from fastapi import FastAPI, File, UploadFile, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -23,7 +26,7 @@ except ImportError:
     pass
 
 try:
-    from gpiozero import Robot, DistanceSensor
+    from gpiozero import Robot
     GPIO_AVAILABLE = True
 except ImportError:
     GPIO_AVAILABLE = False
@@ -34,11 +37,11 @@ try:
 except ImportError:
     TwilioClient = None
 
-SENSOR_TYPE = os.getenv("SENSOR_TYPE", "NONE")
-vl53l0x_sensor = None
 stop_event = threading.Event()
-
-
+#This is due tomorrow so review the code again(side note) also make sure 
+#Git works bc you js started using it, and didn't know prior to use it
+#So majority of code isn't commited, or shown on commits so u can't check on git
+#Iniziation of Camera
 @asynccontextmanager
 async def lifespan(app):
     load_contacts_from_file()
@@ -52,7 +55,7 @@ async def lifespan(app):
     if robot:
         robot.stop()
 
-
+#The app title of the backend 
 app = FastAPI(title="SlipLert Backend", lifespan=lifespan)
 
 # CORS middleware
@@ -64,7 +67,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# MediaPipe Pose initialization
+# MediaPipe Pose initialization~USED FOR THE POSE DETECTION THROUGH THE CAMERA OF THE PI
 mp_pose = mp.solutions.pose
 pose = mp_pose.Pose(
     static_image_mode=False,
@@ -76,7 +79,7 @@ pose = mp_pose.Pose(
     min_tracking_confidence=0.5
 )
 
-# Global state
+# Global state~help from devin
 emergency_contacts = []
 fall_history = []
 robot_position = {"x": 0, "y": 0, "angle": 0}
@@ -86,9 +89,9 @@ CONTACTS_FILE = "emergency_contacts.json"
 FALL_HISTORY_FILE = "fall_history.json"
 
 robot = None
-distance_sensors = {}
 
 if GPIO_AVAILABLE:
+
     try:
         robot = Robot(
             left=(int(os.getenv("ROBOT_LEFT_FORWARD_PIN", 17)), int(os.getenv("ROBOT_LEFT_BACKWARD_PIN", 18))),
@@ -99,41 +102,9 @@ if GPIO_AVAILABLE:
         print(f"Robot GPIO initialization failed (not on Raspberry Pi): {e}")
         GPIO_AVAILABLE = False
 
-    if GPIO_AVAILABLE and SENSOR_TYPE == "HC-SR04":
-        try:
-            distance_sensors['front'] = DistanceSensor(
-                echo=int(os.getenv("SENSOR_FRONT_ECHO", 24)),
-                trigger=int(os.getenv("SENSOR_FRONT_TRIGGER", 25))
-            )
-            distance_sensors['left'] = DistanceSensor(
-                echo=int(os.getenv("SENSOR_LEFT_ECHO", 27)),
-                trigger=int(os.getenv("SENSOR_LEFT_TRIGGER", 16))
-            )
-            distance_sensors['right'] = DistanceSensor(
-                echo=int(os.getenv("SENSOR_RIGHT_ECHO", 20)),
-                trigger=int(os.getenv("SENSOR_RIGHT_TRIGGER", 21))
-            )
-            print("HC-SR04 sensors initialized")
-        except Exception as e:
-            print(f"HC-SR04 sensor initialization failed: {e}")
 
-    elif GPIO_AVAILABLE and SENSOR_TYPE == "VL53L0X":
-        try:
-            import board
-            import busio
-            import adafruit_vl53l0x
-            i2c = busio.I2C(board.SCL, board.SDA)
-            vl53l0x_sensor = adafruit_vl53l0x.VL53L0X(i2c)
-            print("VL53L0X sensor initialized")
-        except ImportError:
-            print("VL53L0X library not installed. Install with: pip install adafruit-circuitpython-vl53l0x")
-        except Exception as e:
-            print(f"VL53L0X sensor initialization failed: {e}")
 
-    elif SENSOR_TYPE == "NONE":
-        print("No distance sensors configured - using camera-only mode")
-
-class FallDetector:
+class FallDetector:#DECTION OF FALLS CALCULATIONS OF POSITION, THIS WAS HELPED THROUGH DEVIN
     def __init__(self):
         self.previous_positions = []
         self.position_history_limit = 10
@@ -184,17 +155,17 @@ class FallDetector:
             fall_type = None
             ankles_visible = left_ankle.visibility > 0.5 and right_ankle.visibility > 0.5
 
-            # Check 1: Body is horizontal (fallen)
+            # Check Number1: Body is horizontal (fallen)
             if body_angle > 60:  # More than 60 degrees from vertical
                 is_fall = True
                 fall_type = "horizontal"
 
-            # Check 2: Fast downward movement
+            # Check Number 1: Fast downward movement
             elif ankles_visible and velocity > self.velocity_threshold and vertical_alignment < self.fall_threshold:
                 is_fall = True
                 fall_type = "fast_fall"
 
-            # Check 3: Sudden change in vertical alignment
+            # Check NUMBER 3: Sudden change in vertical alignment
             elif ankles_visible and len(self.previous_positions) >= 5:
                 recent_alignment = [p["vertical_alignment"] for p in self.previous_positions[-5:]]
                 if max(recent_alignment) - min(recent_alignment) > 0.5:
@@ -209,7 +180,7 @@ class FallDetector:
                 "velocity": velocity,
                 "confidence": 0.95 if is_fall else 0.85
             }
-
+#calculation help from devin
         except Exception as e:
             print(f"Error analyzing pose: {e}")
             return {"is_fall": False, "error": str(e)}
@@ -252,7 +223,7 @@ fall_detector = FallDetector()
 
 from autonomous_controller import AutonomousController
 
-follower = AutonomousController(robot=robot, distance_sensors=distance_sensors, create_hardware=False)
+follower = AutonomousController(robot=robot, create_hardware=False)
 camera_state = {"running": False, "person_detected": False, "fps": 0.0, "last_fall": None}
 latest_jpeg = None
 frame_lock = threading.Lock()
@@ -263,7 +234,7 @@ TORSO_LANDMARKS = [
     mp_pose.PoseLandmark.RIGHT_HIP,
 ]
 
-
+#camera instilization 
 def open_camera():
     try:
         from picamera2 import Picamera2
@@ -283,7 +254,7 @@ def open_camera():
     print("Using OpenCV camera")
     return (lambda: cap.read()[1]), cap.release
 
-
+#the camera constantly is running and checking for the condtiions and if it is connected
 def robot_camera_loop():
     global latest_jpeg
     read_frame, release = open_camera()
@@ -328,7 +299,7 @@ def robot_camera_loop():
                         "body_angle": analysis["body_angle"],
                         "confidence": analysis["confidence"],
                         "source": "robot_camera"
-                    }
+                    }#CHECKS FOR FALL IF SO THERE IS AN ALERT
                     if send_emergency_alert(record):
                         fall_history.append(record)
                         save_fall_history_to_file()
@@ -356,7 +327,7 @@ def robot_camera_loop():
         camera_state["running"] = False
         follower.stop()
         release()
-
+#STORAGE OF THE EMERGANCY CONTACTS
 def load_contacts_from_file():
     global emergency_contacts
     try:
@@ -367,7 +338,7 @@ def load_contacts_from_file():
     except Exception as e:
         print(f"Error loading contacts: {e}")
         emergency_contacts = []
-
+#SAVING THE CONTACTS YOU INPUT IN THE SETTINGS TAB
 def save_contacts_to_file():
     try:
         with open(CONTACTS_FILE, 'w') as f:
@@ -375,7 +346,7 @@ def save_contacts_to_file():
         print(f"Saved {len(emergency_contacts)} contacts to file")
     except Exception as e:
         print(f"Error saving contacts: {e}")
-
+#STORTES WHEN YOUR LOVED ONES FELL PRIOR
 def load_fall_history_from_file():
     global fall_history
     try:
@@ -394,20 +365,8 @@ def save_fall_history_to_file():
     except Exception as e:
         print(f"Error saving fall history: {e}")
 
-def read_distance_sensor(sensor_name: str) -> Optional[float]:
-    try:
-        if SENSOR_TYPE == "HC-SR04" and sensor_name in distance_sensors:
-            return distance_sensors[sensor_name].distance * 100
-        elif SENSOR_TYPE == "VL53L0X" and vl53l0x_sensor:
-            return vl53l0x_sensor.range / 10
-        else:
-            return None
-    except Exception as e:
-        print(f"Error reading sensor {sensor_name}: {e}")
-        return None
-
 # API Routes
-
+#HELP FROM DEVIN
 @app.get("/")
 async def root():
     load_contacts_from_file()
@@ -481,7 +440,7 @@ async def detect_fall_base64(data: dict):
         if img is None:
             raise HTTPException(status_code=400, detail="Invalid image")
 
-        # Convert to RGB for MediaPipe
+        # Convert to RGB for MediaPipe-this was hard so help from devin
         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
         # Process with MediaPipe
@@ -531,12 +490,12 @@ async def add_emergency_contact(contact: dict):
     save_contacts_to_file()
     return {"message": "Contact added successfully", "contact": contact}
 
-@app.get("/emergency-contacts")
+@app.get("/emergency-contacts")#THis takes the input you put in and returns the words contacts: then the varible of what number you put
 async def get_emergency_contacts():
     """Get all emergency contacts"""
     load_contacts_from_file()
     return {"contacts": emergency_contacts}
-
+#Delete function of removing contacts to be called
 @app.delete("/emergency-contacts/{contact_id}")
 async def delete_emergency_contact(contact_id: int):
     """Delete an emergency contact"""
@@ -572,15 +531,15 @@ def send_emergency_alert(fall_record: dict) -> bool:
 
     is_autonomous = False
     follower.stop()
-
+#prints if a fall occured 
     client = get_twilio_client()
     from_number = os.getenv("TWILIO_PHONE_NUMBER")
     message = "This is SlipLert. A fall has been detected. Please check on your loved one immediately."
     if not emergency_contacts:
-        print("No emergency contacts saved - nobody to call")
+        print("No emergency contacts saved, nobody to call")
     for contact in emergency_contacts:
         if not client:
-            print(f"📞 Would call (Twilio not configured): {contact['name']} ({contact['phone']})")
+            print(f" Would call (Twilio not configured): {contact['name']} ({contact['phone']})")
             continue
         try:
             client.calls.create(
@@ -589,7 +548,7 @@ def send_emergency_alert(fall_record: dict) -> bool:
                 twiml=f'<Response><Say loop="2">{message}</Say></Response>'
             )
             client.messages.create(to=contact["phone"], from_=from_number, body=f"{message} Time: {fall_record['timestamp']}")
-            print(f"📞 Called and texted {contact['name']} ({contact['phone']})")
+            print(f"Called and texted {contact['name']} ({contact['phone']})")
         except Exception as e:
             print(f"Failed to alert {contact['name']} ({contact['phone']}): {e}")
     return True
@@ -599,7 +558,7 @@ async def trigger_emergency_alert(fall_record: dict):
     """Trigger emergency alert - call all contacts"""
     await asyncio.to_thread(send_emergency_alert, fall_record)
 
-# Robot Control
+# Robot Control...
 
 @app.post("/robot/control")
 async def control_robot(command: dict):
@@ -610,7 +569,7 @@ async def control_robot(command: dict):
     if not robot:
         return {"message": "Robot not available (GPIO not initialized)", "status": "simulation"}
 
-    try:
+    try:#More driving functions
         if action == "forward":
             robot.forward(speed=speed/100)
         elif action == "backward":

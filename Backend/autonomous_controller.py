@@ -1,5 +1,10 @@
+#Start of code for the robot car to move without a controller
+#Mediapipe will be used for the pose detection as it is a libary it is allowed
+
+
 import cv2
 #This code is helped with Devin, the code was hard to decode and what modules/imports to use were confusing and how to properly font this. 
+#The distance sensor are not nessary technaically so remove later
 import numpy as np
 import mediapipe as mp
 import os
@@ -9,7 +14,7 @@ import math
 
 # Check if running on Raspberry Pi
 try:
-    from gpiozero import Robot, DistanceSensor
+    from gpiozero import Robot
     GPIO_AVAILABLE = True
 except ImportError:
     GPIO_AVAILABLE = False
@@ -18,7 +23,7 @@ except ImportError:
 class AutonomousController:
     """Autonomous robot controller that follows a person using MediaPipe pose detection"""
 
-    def __init__(self, robot=None, distance_sensors=None, create_hardware=True):
+    def __init__(self, robot=None,create_hardware=True):
         # MediaPipe Pose initialization
         self.mp_pose = mp.solutions.pose
         self.pose = self.mp_pose.Pose(
@@ -31,39 +36,30 @@ class AutonomousController:
 
         # Robot initialization
         self.robot = robot
-        self.distance_sensors = distance_sensors or {}
         if create_hardware and robot is None and GPIO_AVAILABLE:
             try:
                 self.robot = Robot(left=(17, 18), right=(22, 23))
             except Exception as e:
-                print(f"Robot GPIO initialization failed: {e}")
-            if os.getenv("SENSOR_TYPE", "NONE") == "HC-SR04":
-                # Add distance sensors if available
-                try:
-                    self.distance_sensors['front'] = DistanceSensor(echo=24, trigger=25)
-                except Exception:
-                    print("Distance sensors not available")
+                print(f"Robot GPIO initialization failed: {e}") #ERROR CODE IF THE CODE WRITTEN DOSEN"T WORK
 
         # Control parameters
-        self.target_distance = float(os.getenv("FOLLOW_TARGET_CM", 120))  # cm - desired distance from person
+        self.target_distance = float(os.getenv("FOLLOW_TARGET_CM", 120))  # cm - the distance we want for the person so they don't collide
         self.min_distance = float(os.getenv("FOLLOW_MIN_CM", 60))  # cm - minimum safe distance
         self.max_distance = 400  # cm - maximum distance to track
-        self.follow_speed = float(os.getenv("FOLLOW_SPEED", 0.5))  # Speed when following
-        self.turn_speed = float(os.getenv("TURN_SPEED", 0.35))  # Speed when turning, slower turns, what to make sure that the car can follow people
-
-        # State tracking
+        self.follow_speed = float(os.getenv("FOLLOW_SPEED", 0.5))  # Speed 
+        self.turn_speed = float(os.getenv("TURN_SPEED", 0.35))  # Speed when turing
         self.is_running = False
         self.person_position = None  # (x, y, z) in camera coordinates
         self.last_person_position = None
         self.frame_width = 640
         self.frame_height = 480
 
-    def start(self):
+    def start(self):#to start the robot
         """Start autonomous following"""
         self.is_running = True
         print("Autonomous mode started")
 
-    def stop(self):
+    def stop(self):#stoping movment
         """Stop autonomous following"""
         self.is_running = False
         if self.robot:
@@ -80,7 +76,7 @@ class AutonomousController:
         Returns:
             Tuple of (person_detected, control_commands)
         """
-        if not self.is_running:
+        if not self.is_running:#if person not moving stop moving car. 
             return False, {"action": "stop"}
 
         # Convert to RGB
@@ -96,7 +92,7 @@ class AutonomousController:
             self.lose_person()
             return False, {"action": "stop"}
 
-    def lose_person(self):
+    def lose_person(self):#If the person is not found for use to see
         self.person_position = None
         if self.robot:
             self.robot.stop()
@@ -105,7 +101,8 @@ class AutonomousController:
         if not self.is_running:
             return {"action": "stop"}
 
-        # Get torso center (midpoint of shoulders and hips)
+        # Get torso center (midpoint of shoulders and hips)#Media pose landmark, marking were these positions are
+        #so when/if they fall can decect it
         left_shoulder = landmarks[self.mp_pose.PoseLandmark.LEFT_SHOULDER]
         right_shoulder = landmarks[self.mp_pose.PoseLandmark.RIGHT_SHOULDER]
         left_hip = landmarks[self.mp_pose.PoseLandmark.LEFT_HIP]
@@ -169,10 +166,6 @@ class AutonomousController:
         """
         commands = {"action": "stop", "speed": 0, "turn": 0}
 
-        # Check for obstacles using distance sensors
-        obstacle_detected = self._check_obstacles()
-        if obstacle_detected:
-            return self._handle_obstacle(obstacle_detected)
 
         # Calculate horizontal offset from center
         horizontal_offset = center_x - 0.5  # -0.5 to 0.5
@@ -222,14 +215,14 @@ class AutonomousController:
         """Handle obstacle detection"""
         print(f"Obstacle detected at {direction}")
 
-        if direction == "front":
-            # Obstacle ahead - stop and wait
+        if direction == "front": #DRIVING FUNCTIONS
+            # Obstacle ahead:stop and wait
             return {"action": "stop", "reason": "obstacle_front"}
         elif direction == "left":
-            # Obstacle on left - turn right
+            # Obstacle on left: turn right
             return {"action": "right", "speed": self.turn_speed}
         elif direction == "right":
-            # Obstacle on right - turn left
+            # Obstacle on right: turn left
             return {"action": "left", "speed": self.turn_speed}
 
         return {"action": "stop"}
@@ -250,7 +243,7 @@ class AutonomousController:
                 curve_left=min(turn * 2, 1) if turn > 0 else 0,
                 curve_right=min(-turn * 2, 1) if turn < 0 else 0
             )
-        elif action == "backward":
+        elif action == "backward":#DRIVING FUNCTIONS AND SPEED COORDINATED WITH THAT
             self.robot.backward(speed=commands.get("speed", self.follow_speed * 0.5))
         elif action == "left":
             self.robot.left(speed=commands.get("speed", self.turn_speed))
@@ -320,3 +313,5 @@ def test_autonomous_controller():
 
 if __name__ == "__main__":
     test_autonomous_controller()
+
+    #THE END dum dum dum!!!!!

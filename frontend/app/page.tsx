@@ -115,32 +115,33 @@ export default function Home() {
         </div>
       </nav>
 
-      {/* Hero Section */}
+      {/* Hero Section - the flicker on the sliplert logo below*/}
       <div className="flex flex-col items-center justify-center px-4 pt-24 pb-16 relative">
         <div className="absolute inset-0 overflow-hidden pointer-events-none">
           <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-indigo-500/15 rounded-full blur-3xl animate-pulse" />
           <div className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-violet-500/15 rounded-full blur-3xl animate-pulse" style={{ animationDelay: '1s' }} />
         </div>
 
-        <div className="text-center max-w-4xl relative z-10">
-          <div className="inline-flex items-center bg-indigo-500/10 border border-indigo-500/30 rounded-full px-5 py-1.5 mb-8">
+        <div className="text-center max-w-4xl relative z-8">
+          <div className="inline-flex items-center bg-indigo-400/10 border border-indigo-400/30 rounded-full px-5 py-1.5 mb-6">
             <span className="text-indigo-400 text-xs font-semibold tracking-widest">ACTIVE FALL DETECTION SYSTEM</span>
           </div>
 
-          <h1 className="text-6xl font-bold mb-6 tracking-tight leading-tight">
-            24/7 Safety & Instant
+          <h1 className="text-7xl font-bold mb-6 tracking-tight leading-tight">
+          
             <br />
-            Emergency Alerts
+            Sliplert
           </h1>
 
           <p className="text-lg text-slate-400 mb-10 max-w-2xl mx-auto leading-relaxed">
-            SlipLert actively monitors for accidental slips and falls, notifying your trusted loved ones and medical emergency contacts in milliseconds.
+            Hi, this is Sliplert. This is an app that lets you see and protect your loved ones. How so? Well this app helps you monitor where they are, and if they have accidentally fallen or got injured. If that does happen, you get called. We want to make sure that you can be worry free for your elders in a way that you can still see them without being next to them 24/7. We want to take care of everyone that is our lives, so let Sliplert help you. We follow your loved one through a trailing robot car that is next to them. And with a Media pipe it detects the position of your loved one, determining if they fall via the camera on the robot car, then we call you. You can see them through the app as well as the camera I connected to the app.
+
           </p>
 
           <div className="flex flex-col sm:flex-row gap-4 justify-center items-center">
             <Link href="/dashboard">
               <button className="bg-indigo-600 hover:bg-indigo-500 text-white px-8 py-3.5 rounded-lg font-semibold text-base shadow-lg shadow-indigo-500/25 transition transform hover:scale-105 active:scale-95 w-full sm:w-auto">
-                View Dashboard
+                See Dashboard
               </button>
             </Link>
             <button
