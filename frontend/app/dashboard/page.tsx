@@ -73,6 +73,17 @@ export default function CameraDashboard() {
     setAlertMessage(`FALL DETECTED (${fallType.toUpperCase()}) — CALLING ${who.toUpperCase()}`);
     addLog(`CRITICAL: Fall detected (${fallType})! Stopping robot & alerting ${who}...`);
 
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      try {
+        window.speechSynthesis.cancel();
+        const utter = new SpeechSynthesisUtterance(
+          `SlipLert Emergency Alert. A fall has been detected. Stopping robot and calling ${who}.`
+        );
+        utter.rate = 1.0;
+        window.speechSynthesis.speak(utter);
+      } catch {}
+    }
+
     if (alertTimerRef.current) clearTimeout(alertTimerRef.current);
     setTimeout(() => {
       addLog(`Emergency call & SMS dispatched to ${who}.`);

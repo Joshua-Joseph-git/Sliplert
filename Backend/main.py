@@ -17,6 +17,7 @@ import sys
 import os
 import threading
 import time
+import subprocess
 from contextlib import asynccontextmanager
 #DEVIN HELP FOR WHICH API'S I USED
 try:
@@ -80,6 +81,19 @@ CONTACTS_FILE = "emergency_contacts.json"
 FALL_HISTORY_FILE = "fall_history.json"
 
 robot = None
+
+if sys.platform.startswith("linux"):
+    try:
+        my_pid = os.getpid()
+        subprocess.run(["sudo", "-n", "systemctl", "stop", "sliplert"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        out = subprocess.check_output(["pgrep", "-f", "main.py"], text=True)
+        for line in out.splitlines():
+            pid = int(line.strip())
+            if pid != my_pid:
+                os.kill(pid, 9)
+        time.sleep(0.5)
+    except Exception:
+        pass
 
 if GPIO_AVAILABLE:
 
