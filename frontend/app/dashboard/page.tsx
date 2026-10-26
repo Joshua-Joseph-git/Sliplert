@@ -93,12 +93,17 @@ export default function CameraDashboard() {
         }
         const data: RobotStatus = await response.json();
         setRobot(data);
-        if (data.camera_running && typeof data.posture_score === 'number') {
-          setStats(prev => ({
-            ...prev,
-            fps: data.fps || prev.fps,
-            postureScore: data.posture_score ?? prev.postureScore,
-          }));
+        if (data.camera_running) {
+          if (!videoRef.current?.srcObject) {
+            setFeed('robot');
+          }
+          if (typeof data.posture_score === 'number') {
+            setStats(prev => ({
+              ...prev,
+              fps: data.fps || prev.fps,
+              postureScore: data.posture_score ?? prev.postureScore,
+            }));
+          }
         }
         if (data.last_fall && data.last_fall.timestamp !== lastRobotFallRef.current) {
           lastRobotFallRef.current = data.last_fall.timestamp;
@@ -304,14 +309,14 @@ export default function CameraDashboard() {
             <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover" />
             <canvas ref={canvasRef} className="absolute top-0 left-0 w-full h-full pointer-events-none" />
             
-            {feed === 'robot' && robot?.camera_running && (
+            {(feed === 'robot' || !videoRef.current?.srcObject) && robot?.camera_running && (
               <img src={`${backendUrl}/video_feed`} alt="Robot camera" className="absolute inset-0 w-full h-full object-cover" />
             )}
 
-            {feed === 'laptop' && !videoRef.current?.srcObject && (
+            {!robot?.camera_running && !videoRef.current?.srcObject && (
               <div className="absolute inset-0 bg-slate-800 flex flex-col items-center justify-center">
                 <div className="text-slate-500 text-sm mb-2">Camera Feed Offline</div>
-                <div className="text-slate-600 text-xs">Grant camera permissions to enable monitoring</div>
+                <div className="text-slate-600 text-xs">Click Connect in Robot Control to start camera monitoring</div>
               </div>
             )}
             
