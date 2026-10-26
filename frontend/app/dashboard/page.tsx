@@ -225,6 +225,21 @@ export default function CameraDashboard() {
     setRobotBusy(false);
   };
 
+  const sendRobotCommand = async (action: 'forward' | 'backward' | 'left' | 'right' | 'stop') => {
+    if (!robot) return;
+    try {
+      const response = await fetch(`${backendUrl}/robot/control`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action, speed: 55 }),
+      });
+      const data = await response.json();
+      addLog(`Motor test: ${action.toUpperCase()} (${data.status || 'sent'}).`);
+    } catch {
+      addLog(`Failed to send ${action} command to robot.`);
+    }
+  };
+
   const startFallDetection = (isStopped: () => boolean) => {
     if (!videoRef.current) return;
 
@@ -443,7 +458,7 @@ export default function CameraDashboard() {
               {robot?.autonomous ? 'Stop Following' : 'Start Following'}
             </button>
 
-            <div className="flex bg-slate-950 border border-slate-800 rounded-lg p-1 text-xs">
+            <div className="flex bg-slate-950 border border-slate-800 rounded-lg p-1 text-xs mb-3">
               {(['laptop', 'robot'] as const).map((source) => (
                 <button
                   key={source}
@@ -456,6 +471,56 @@ export default function CameraDashboard() {
                   {source === 'laptop' ? 'Laptop Cam' : 'Robot Cam'}
                 </button>
               ))}
+            </div>
+
+            <div className="border-t border-slate-800 pt-3">
+              <div className="flex items-center justify-between text-xs text-slate-400 mb-2">
+                <span className="uppercase tracking-wider">Motor Drive Test</span>
+                <span className={robot?.gpio_available ? 'text-emerald-400' : 'text-amber-400'}>
+                  {robot?.gpio_available ? 'GPIO Motors Ready' : 'Simulation Mode'}
+                </span>
+              </div>
+              <div className="grid grid-cols-3 gap-1.5 text-xs">
+                <div />
+                <button
+                  onClick={() => sendRobotCommand('forward')}
+                  disabled={!robot}
+                  className="py-2 bg-slate-950 hover:bg-indigo-600 border border-slate-800 rounded-lg font-semibold transition disabled:opacity-40"
+                >
+                  ▲ Fwd
+                </button>
+                <div />
+                <button
+                  onClick={() => sendRobotCommand('left')}
+                  disabled={!robot}
+                  className="py-2 bg-slate-950 hover:bg-indigo-600 border border-slate-800 rounded-lg font-semibold transition disabled:opacity-40"
+                >
+                  ◀ Left
+                </button>
+                <button
+                  onClick={() => sendRobotCommand('stop')}
+                  disabled={!robot}
+                  className="py-2 bg-red-600/20 hover:bg-red-600 text-red-400 hover:text-white border border-red-500/30 rounded-lg font-semibold transition disabled:opacity-40"
+                >
+                  ■ Stop
+                </button>
+                <button
+                  onClick={() => sendRobotCommand('right')}
+                  disabled={!robot}
+                  className="py-2 bg-slate-950 hover:bg-indigo-600 border border-slate-800 rounded-lg font-semibold transition disabled:opacity-40"
+                >
+                  Right ▶
+                </button>
+                <div />
+                <button
+                  onClick={() => sendRobotCommand('backward')}
+                  disabled={!robot}
+                  className="py-2 bg-slate-950 hover:bg-indigo-600 border border-slate-800 rounded-lg font-semibold transition disabled:opacity-40"
+                >
+                  ▼ Back
+                </button>
+                <div />
+              </div>
             </div>
           </div>
 
