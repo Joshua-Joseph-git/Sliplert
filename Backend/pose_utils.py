@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 import math
 import os
+import platform
 import subprocess
 import sys
 import urllib.request
@@ -38,12 +39,31 @@ class Landmark:
     visibility: float
 
 
+def _cpu_lacks_aes_on_arm() -> bool:
+    if platform.system() != "Linux" or platform.machine().lower() not in ("aarch64", "arm64", "armv7l"):
+        return False
+    try:
+        with open("/proc/cpuinfo", "r") as f:
+            info = f.read().lower()
+        return "aes" not in info.split()
+    except Exception:
+        return False
+
+
 def _check_mediapipe_usable() -> bool:
     if os.getenv("FORCE_TFLITE_DNN", "").lower() in ("1", "true", "yes"):
         return False
+    if sys.version_info >= (3, 13) and _cpu_lacks_aes_on_arm():
+        return False
+    code = (
+        "import mediapipe as mp; from mediapipe.tasks.python import vision; "
+        "from mediapipe.tasks.python.core import mediapipe_c_bindings as b; b.load_raw_library()"
+        if sys.version_info >= (3, 13)
+        else "import mediapipe as mp; from mediapipe.tasks.python import vision"
+    )
     try:
         res = subprocess.run(
-            [sys.executable, "-c", "import mediapipe as mp; from mediapipe.tasks.python import vision"],
+            [sys.executable, "-c", code],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             timeout=15,
@@ -59,7 +79,7 @@ if MP_AVAILABLE:
     from mediapipe.tasks.python import BaseOptions
     from mediapipe.tasks.python import vision
 else:
-    print("MediaPipe native binary incompatible with this CPU - using MediaPipe TFLite model via OpenCV DNN")
+    print("Using MediaPipe BlazePose TFLite model via OpenCV DNN (Raspberry Pi CPU mode)")
 
 
 def model_path(complexity: int) -> str:
@@ -108,16 +128,28 @@ def detect_landmarks(landmarker, bgr_frame, timestamp_ms=None):
 
     blob = cv2.dnn.blobFromImage(bgr_frame, scalefactor=1.0 / 255.0, size=(256, 256), swapRB=True)
     landmarker.setInput(blob)
-    raw, score = landmarker.forward(["Identity", "Identity_1"])
-    if float(score.flat[0]) < 0.35:
+    score = float(landmarker.forward("Identity_1").flat[0])
+    if score < 0.35:
         return None
-    pts = raw.reshape(39, 5)[:33]
+    raw = landmarker.forward("Identity")
+    if raw.size >= 165:
+        pts = raw.reshape(-1, 5)[:33]
+        return [
+            Landmark(
+                x=float(pts[i, 0]) / 256.0,
+                y=float(pts[i, 1]) / 256.0,
+                z=float(pts[i, 2]) / 256.0,
+                visibility=float(1.0 / (1.0 + math.exp(-max(-20.0, min(20.0, float(pts[i, 3])))))),
+            )
+            for i in range(33)
+        ]
+    pts3d = landmarker.forward("Identity_4").reshape(-1, 3)[:33]
     return [
         Landmark(
-            x=float(pts[i, 0]) / 256.0,
-            y=float(pts[i, 1]) / 256.0,
-            z=float(pts[i, 2]) / 256.0,
-            visibility=float(1.0 / (1.0 + math.exp(-max(-20.0, min(20.0, float(pts[i, 3])))))),
+            x=float(np.clip(pts3d[i, 0] + 0.5, 0.0, 1.0)),
+            y=float(np.clip(pts3d[i, 1] + 0.5, 0.0, 1.0)),
+            z=float(pts3d[i, 2]),
+            visibility=score,
         )
         for i in range(33)
     ]
