@@ -230,10 +230,39 @@ def open_camera():
     try:
         from picamera2 import Picamera2
         picam = Picamera2()
-        picam.configure(picam.create_preview_configuration(main={"size": (640, 480), "format": "RGB888"}))
+        cfg = picam.create_preview_configuration(
+            main={"size": (640, 480), "format": "RGB888"},
+            buffer_count=2,
+        )
+        picam.configure(cfg)
         picam.start()
+
+        first_frame = [None]
+        def _grab_one():
+            try:
+                first_frame[0] = picam.capture_array()
+            except Exception:
+                pass
+        probe = threading.Thread(target=_grab_one, daemon=True)
+        probe.start()
+        probe.join(timeout=3.0)
+        if first_frame[0] is None:
+            try:
+                picam.stop()
+                picam.close()
+            except Exception:
+                pass
+            raise RuntimeError("Pi camera did not return a frame (check ribbon cable or reboot Pi)")
+
+        def _close_picam():
+            try:
+                picam.stop()
+                picam.close()
+            except Exception:
+                pass
+
         print("Using Raspberry Pi camera (picamera2)")
-        return (lambda: cv2.cvtColor(picam.capture_array(), cv2.COLOR_RGB2BGR)), picam.stop
+        return (lambda: cv2.cvtColor(picam.capture_array(), cv2.COLOR_RGB2BGR)), _close_picam
     except Exception as e:
         print(f"picamera2 not available ({e}) - trying USB/OpenCV camera")
 
