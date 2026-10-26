@@ -1,15 +1,17 @@
 'use client';
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
-import {
-  EmergencyContact,
-  contactKey,
-  getSavedBackendUrl,
-  loadCachedContacts,
-  saveCachedContacts,
-  syncContactsToPi,
-  validateContactTarget,
-} from '@/lib/sliplert';
+
+const DEFAULT_BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+const getBackendUrl = () =>
+  (typeof window !== 'undefined' && window.localStorage.getItem('sliplert_backend_url')) || DEFAULT_BACKEND_URL;
+
+type EmergencyContact = {
+  id: number;
+  name: string;
+  phone: string;
+  relationship: string;
+};
 
 export default function Settings() {
   const [contacts, setContacts] = useState<EmergencyContact[]>([]);
@@ -19,99 +21,81 @@ export default function Settings() {
     relationship: ''
   });
   const [showContactForm, setShowContactForm] = useState(false);
-  const [formError, setFormError] = useState<string | null>(null);
-  const [syncNote, setSyncNote] = useState('');
-
-  const updateContacts = (list: EmergencyContact[]) => {
-    setContacts(list);
-    saveCachedContacts(list);
-  };
-
-  const loadContacts = async () => {
-    setContacts(loadCachedContacts());
-    const backendUrl = getSavedBackendUrl();
-    if (!backendUrl) {
-      setSyncNote('Not connected to the robot yet. Contacts are saved in this browser and sync when you click Connect on the Dashboard.');
-      return;
-    }
-    try {
-      // The Pi is the one that sends the alerts, so its list is the real one
-      const onPi = await syncContactsToPi(backendUrl);
-      if (onPi) {
-        updateContacts(onPi);
-        setSyncNote(`Synced with the robot at ${backendUrl}.`);
-        return;
-      }
-    } catch {}
-    setSyncNote(`Robot at ${backendUrl} is offline. Changes are saved in this browser and sync when it is back.`);
-  };
 
   useEffect(() => {
     loadContacts();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const addContact = async () => {
-    const contact = {
-      name: newContact.name.trim(),
-      phone: newContact.phone.trim(),
-      relationship: newContact.relationship.trim(),
-    };
-    if (!contact.name || !contact.phone || !contact.relationship) {
-      setFormError('Please fill in all fields.');
-      return;
-    }
-    const problem = validateContactTarget(contact.phone);
-    if (problem) {
-      setFormError(problem);
-      return;
-    }
-    if (contacts.some(c => contactKey(c.phone) === contactKey(contact.phone))) {
-      setFormError('That contact is already saved.');
-      return;
-    }
-    setFormError(null);
-
-    const backendUrl = getSavedBackendUrl();
-    let saved: EmergencyContact = { id: Date.now(), ...contact };
-    if (backendUrl) {
+  const loadContacts = async () => {
+    const cached = window.localStorage.getItem('sliplert_contacts');
+    if (cached) {
       try {
-        const response = await fetch(`${backendUrl}/emergency-contacts`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(contact),
-          signal: AbortSignal.timeout(3000),
-        });
-        if (response.ok) {
-          saved = (await response.json()).contact;
-        } else {
-          setSyncNote('Robot did not accept the contact; saved in this browser only for now.');
-        }
-      } catch {
-        setSyncNote('Robot is offline; saved in this browser. It will sync when you click Connect on the Dashboard.');
-      }
+        setContacts(JSON.parse(cached));
+      } catch {}
     }
-    updateContacts([...contacts, saved]);
+    try {
+      const response = await fetch(`${getBackendUrl()}/emergency-contacts`);
+      if (!response.ok) return;
+      const data = await response.json();
+      if (data.contacts && data.contacts.length > 0) {
+        setContacts(data.contacts);
+        window.localStorage.setItem('sliplert_contacts', JSON.stringify(data.contacts));
+      }
+    } catch {
+    }
+  };
+
+  const addContact = async () => {
+    if (!newContact.name || !newContact.phone || !newContact.relationship) {
+      alert('Please fill in all fields');
+      return;
+    }
+
+    const fallbackContact: EmergencyContact = {
+      id: Date.now(),
+      name: newContact.name,
+      phone: newContact.phone,
+      relationship: newContact.relationship,
+    };
+
+    try {
+      const response = await fetch(`${getBackendUrl()}/emergency-contacts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newContact),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        const updated = [...contacts, data.contact];
+        setContacts(updated);
+        window.localStorage.setItem('sliplert_contacts', JSON.stringify(updated));
+        setNewContact({ name: '', phone: '', relationship: '' });
+        setShowContactForm(false);
+        return;
+      }
+    } catch {
+    }
+
+    const updated = [...contacts, fallbackContact];
+    setContacts(updated);
+    window.localStorage.setItem('sliplert_contacts', JSON.stringify(updated));
     setNewContact({ name: '', phone: '', relationship: '' });
     setShowContactForm(false);
   };
 
-  const deleteContact = async (contact: EmergencyContact) => {
+  const deleteContact = async (id: number) => {
     if (!confirm('Are you sure you want to delete this contact?')) return;
 
-    updateContacts(contacts.filter(c => c.id !== contact.id));
+    const updated = contacts.filter(c => c.id !== id);
+    setContacts(updated);
+    window.localStorage.setItem('sliplert_contacts', JSON.stringify(updated));
 
-    const backendUrl = getSavedBackendUrl();
-    if (!backendUrl) return;
     try {
-      // Match by address, not id: a contact added while offline has a different id on the Pi
-      const res = await fetch(`${backendUrl}/emergency-contacts`, { signal: AbortSignal.timeout(3000) });
-      const onPi: EmergencyContact[] = res.ok ? (await res.json()).contacts || [] : [];
-      for (const c of onPi.filter(c => contactKey(c.phone) === contactKey(contact.phone))) {
-        await fetch(`${backendUrl}/emergency-contacts/${c.id}`, { method: 'DELETE' });
-      }
+      await fetch(`${getBackendUrl()}/emergency-contacts/${id}`, {
+        method: 'DELETE',
+      });
     } catch {
-      setSyncNote('Robot is offline; the contact was removed here but may still be on the robot. Delete it again once the robot is online.');
     }
   };
 
@@ -133,8 +117,7 @@ export default function Settings() {
 
       <div className="max-w-4xl mx-auto px-6 py-12">
         <h1 className="text-4xl font-bold mb-2 text-slate-200">Settings</h1>
-        <p className="text-slate-400 mb-3">Manage your emergency contacts</p>
-        {syncNote && <p className="text-xs text-slate-500 mb-9">{syncNote}</p>}
+        <p className="text-slate-400 mb-12">Manage your emergency contacts</p>
 
         <div className="mb-12">
           <h2 className="text-2xl font-semibold mb-6 text-slate-200">Emergency Contacts</h2>
@@ -144,7 +127,7 @@ export default function Settings() {
                 These contacts will receive an instant emergency email alert when a fall is detected.
               </p>
               <button
-                onClick={() => { setShowContactForm(!showContactForm); setFormError(null); }}
+                onClick={() => setShowContactForm(!showContactForm)}
                 className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg transition text-sm font-medium"
               >
                 {showContactForm ? 'Cancel' : 'Add Contact'}
@@ -183,7 +166,6 @@ export default function Settings() {
                     placeholder="e.g., Son, Daughter, Caregiver"
                   />
                 </div>
-                {formError && <p className="text-sm text-red-400">{formError}</p>}
                 <button
                   onClick={addContact}
                   className="w-full py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg transition font-medium"
@@ -196,7 +178,7 @@ export default function Settings() {
             {contacts.length === 0 ? (
               <div className="text-center py-8 text-slate-500">
                 <p>No emergency contacts added yet.</p>
-                <p className="text-sm mt-2">Add a caregiver&apos;s email address so SlipLert can alert them when a fall is detected.</p>
+                <p className="text-sm mt-2">Add contacts to enable automatic emergency calls.</p>
               </div>
             ) : (
               <div className="space-y-3">
@@ -211,7 +193,7 @@ export default function Settings() {
                       <p className="text-xs text-slate-500 mt-1">{contact.relationship}</p>
                     </div>
                     <button
-                      onClick={() => deleteContact(contact)}
+                      onClick={() => deleteContact(contact.id)}
                       className="px-3 py-1.5 bg-red-600/10 hover:bg-red-600/20 text-red-400 rounded-lg transition text-sm"
                     >
                       Delete

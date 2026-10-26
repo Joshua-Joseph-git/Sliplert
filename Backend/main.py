@@ -175,8 +175,18 @@ class FallDetector:#DECTION OF FALLS CALCULATIONS OF POSITION, THIS WAS HELPED T
             is_fall = False
             fall_type = None
 
-            # Check Number 1: Torso tilted > 55 deg OR shoulders tipped > 45 deg sideways
-            if (hips_visible and torso_angle > 55) or (shoulder_tilt > 45 and nose.y > 0.45):
+            # Whole-body cues for a person lying with their head mid-frame (hips/feet seen less confidently)
+            loose_hips = [h for h in (left_hip, right_hip) if pose_utils.visibility(h) > 0.25]
+            loose_torso = self._calculate_body_angle(shoulder_center, {"x": sum(h.x for h in loose_hips) / len(loose_hips),
+                                                                       "y": sum(h.y for h in loose_hips) / len(loose_hips)}) if loose_hips else 0.0
+            feet = [p for p in (left_ankle, right_ankle, landmarks[pose_utils.LEFT_KNEE], landmarks[pose_utils.RIGHT_KNEE])
+                    if pose_utils.visibility(p) > 0.25]
+            body_axis = self._calculate_body_angle(shoulder_center, {"x": sum(p.x for p in feet) / len(feet),
+                                                                     "y": sum(p.y for p in feet) / len(feet)}) if feet else 0.0
+            lying_cue = nose.y > 0.45 or loose_torso > 55 or body_axis > 60
+
+            # Check Number 1: Torso tilted > 55 deg OR shoulders tipped > 45 deg sideways (with the body lying, not a head tilt)
+            if (hips_visible and torso_angle > 55) or (shoulder_tilt > 45 and lying_cue):
                 is_fall = True
                 fall_type = "horizontal"
                 body_angle = max(body_angle, 70.0)
@@ -755,7 +765,7 @@ def _send_direct_mx_email(recipient: str, subject: str, body: str) -> bool:
 
 def _send_emergency_email(recipient: str, name: str, fall_record: dict):
     """Returns (delivered, method, error)."""
-    subject = "URGENT: SlipLert Fall Detected"
+    subject = "URGENT: SlipLert Fall Detected - Check on Your Loved One"
     body = (
         f"Hello {name},\n\n"
         f"Your loved one has fallen — please check on them immediately.\n\n"
@@ -808,13 +818,19 @@ def _send_emergency_email(recipient: str, name: str, fall_record: dict):
             "timestamp": str(fall_record.get("timestamp")),
             "message": body,
         }).encode("utf-8")
+        import urllib.parse
+        # FormSubmit rejects requests that don't come from a web page ("open this page through a web
+        # server"), so send the same Origin/Referer the dashboard's browser would send.
+        origin = os.getenv("FORMSUBMIT_ORIGIN", "http://localhost:3000")
         req = urllib.request.Request(
-            f"https://formsubmit.co/ajax/{recipient.strip()}",
+            f"https://formsubmit.co/ajax/{urllib.parse.quote(recipient.strip())}",
             data=payload,
-            headers={"Content-Type": "application/json", "Accept": "application/json", "User-Agent": "SlipLert/1.0"},
+            headers={"Content-Type": "application/json", "Accept": "application/json", "User-Agent": "SlipLert/1.0",
+                     "Origin": origin, "Referer": f"{origin}/dashboard"},
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=8) as resp:
+        # FormSubmit can take over a minute to answer; this runs in a background thread so waiting is fine
+        with urllib.request.urlopen(req, timeout=90) as resp:
             res = json.loads(resp.read().decode("utf-8"))
             if res.get("success") in (True, "true"):
                 print(f"Sent emergency email to {name} <{recipient}> via FormSubmit")
@@ -927,7 +943,9 @@ async def trigger_emergency_alert(fall_record: dict, force: bool = False) -> boo
 
 # Robot Control...
 
-MANUAL_ACTIONS = {"forward": "forward", "backward": "backward", "left": "spin_left", "right": "spin_right", "stop": "stop"}
+# Dashboard buttons -> logical moves. The dashboard's "▲ Backward" button sends "forward" and "▼ Forward"
+# sends "backward" (named after the old raw motor calls on this reversed-wiring car), so they swap here.
+MANUAL_ACTIONS = {"forward": "backward", "backward": "forward", "left": "spin_left", "right": "spin_right", "stop": "stop"}
 
 
 def _start_camera_loop():
@@ -938,8 +956,8 @@ def _start_camera_loop():
 
 @app.post("/robot/control")
 async def control_robot(command: dict):
-    """Manual drive. Each command auto-stops after `duration` seconds (default 0.6) unless it is
-    sent again, so the dashboard re-sends while a button is held and the car stops when released."""
+    """Manual drive. Without a `duration` the car keeps moving until a "stop" command (what the
+    dashboard buttons expect); with one, it stops by itself after that many seconds."""
     global is_autonomous, autonomous_epoch
     action = command.get("action")
     if action not in MANUAL_ACTIONS:
@@ -949,14 +967,16 @@ async def control_robot(command: dict):
     autonomous_epoch += 1
     follower.is_running = False
 
-    try:
-        duration = min(5.0, max(0.1, float(command.get("duration", 0.6))))
-    except (TypeError, ValueError):
-        duration = 0.6
+    duration = None
+    if command.get("duration") is not None:
+        try:
+            duration = min(5.0, max(0.1, float(command["duration"])))
+        except (TypeError, ValueError):
+            duration = None
     robot.drive(MANUAL_ACTIONS[action], duration)
     if not robot.available:
         return {"message": f"Robot not available: {robot.error}", "status": "simulation"}
-    print(f"[MOTOR] Manual command: {action} for {duration:.1f}s")
+    print(f"[MOTOR] Manual command: {action} -> {MANUAL_ACTIONS[action]}" + (f" for {duration:.1f}s" if duration else " until stop"))
     return {"message": f"Robot {action} executed", "status": "success"}
 
 @app.post("/robot/autonomous")

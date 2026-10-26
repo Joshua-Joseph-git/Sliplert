@@ -12,15 +12,26 @@ import threading
 import time
 from typing import Tuple, Optional
 
-# gpiozero needs a pin driver (lgpio / RPi.GPIO). Raspberry Pi OS ships them as system packages,
-# which a normal .venv can't see -> "Unable to load any default pin factory" and no motors.
-# Fall back to the system copies (appended last, so the venv's own packages still win).
+# gpiozero needs a pin driver (lgpio). Raspberry Pi OS ships it as a system package, which a normal
+# .venv can't see -> "Unable to load any default pin factory" and no motors.
+# Borrow ONLY lgpio from the system folder, then remove that folder from the search path again, so
+# nothing else (e.g. the system's picamera2 built for a different numpy) gets mixed into the venv.
 if sys.platform.startswith("linux"):
+    import importlib
     import importlib.util
-    if importlib.util.find_spec("lgpio") is None and importlib.util.find_spec("RPi") is None:
+    if importlib.util.find_spec("lgpio") is None:
         for _sys_pkgs in ("/usr/lib/python3/dist-packages", f"/usr/lib/python3.{sys.version_info.minor}/dist-packages"):
-            if os.path.isdir(_sys_pkgs) and _sys_pkgs not in sys.path:
-                sys.path.append(_sys_pkgs)
+            if not os.path.isdir(_sys_pkgs) or _sys_pkgs in sys.path:
+                continue
+            sys.path.append(_sys_pkgs)
+            try:
+                importlib.import_module("lgpio")  # stays loaded after the folder is removed below
+            except Exception:
+                pass
+            finally:
+                sys.path.remove(_sys_pkgs)
+            if "lgpio" in sys.modules:
+                break
 
 # Check if running on Raspberry Pi
 try:

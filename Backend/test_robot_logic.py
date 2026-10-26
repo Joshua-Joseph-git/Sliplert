@@ -313,6 +313,16 @@ class FallDetectorTests(unittest.TestCase):
         det = self.main.FallDetector()
         self.assertTrue(det.analyze_pose(make_person(0.5, lying=True))["is_fall"])
 
+    def test_lying_with_head_mid_frame_is_a_fall(self):
+        # Seen on real photos: head in the upper half of the frame and one hip barely visible
+        det = self.main.FallDetector()
+        lms = make_person(0.5, lying=True)
+        for i in list(range(33)):
+            lms[i] = Landmark(lms[i].x, lms[i].y - 0.4, 0, lms[i].visibility)
+        lms[pose_utils.RIGHT_HIP] = Landmark(lms[pose_utils.RIGHT_HIP].x, lms[pose_utils.RIGHT_HIP].y, 0, 0.28)
+        self.assertLess(lms[pose_utils.NOSE].y, 0.45)
+        self.assertTrue(det.analyze_pose(lms)["is_fall"])
+
     def test_hidden_shoulders_never_alarm(self):
         det = self.main.FallDetector()
         lms = make_person(0.5, lying=True)
@@ -348,15 +358,24 @@ class ApiAndLoopTests(unittest.TestCase):
         self.sent.clear()
 
     def test_manual_drive_auto_stops(self):
-        r = self.client.post("/robot/control", json={"action": "forward", "duration": 0.2}).json()
+        # Dashboard's "▼ Forward" button sends "backward" (reversed-wiring naming)
+        r = self.client.post("/robot/control", json={"action": "backward", "duration": 0.2}).json()
         self.assertIn(r["status"], ("success", "simulation"))
         self.assertEqual(self.main.robot.last_action, "forward")
         time.sleep(0.4)
         self.assertEqual(self.main.robot.last_action, "stop")
         self.assertFalse(self.main.is_autonomous)
 
+    def test_dashboard_tap_drives_until_stop(self):
+        # The dashboard sends one command per click (no duration) and expects motion until Stop
+        self.client.post("/robot/control", json={"action": "forward", "speed": 100})
+        time.sleep(0.8)
+        self.assertEqual(self.main.robot.last_action, "backward")  # "▲ Backward" button
+        self.client.post("/robot/control", json={"action": "stop"})
+        self.assertEqual(self.main.robot.last_action, "stop")
+
     def test_manual_turn_maps_to_spin(self):
-        self.client.post("/robot/control", json={"action": "left", "duration": 0.2})
+        self.client.post("/robot/control", json={"action": "left"})
         self.assertEqual(self.main.robot.last_action, "spin_left")
         self.client.post("/robot/control", json={"action": "stop"})
         self.assertEqual(self.main.robot.last_action, "stop")
