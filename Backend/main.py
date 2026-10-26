@@ -233,7 +233,7 @@ def open_camera():
         picam.configure(picam.create_preview_configuration(main={"size": (640, 480), "format": "RGB888"}))
         picam.start()
         print("Using Raspberry Pi camera (picamera2)")
-        return picam.capture_array, picam.stop
+        return (lambda: cv2.cvtColor(picam.capture_array(), cv2.COLOR_RGB2BGR)), picam.stop
     except Exception as e:
         print(f"picamera2 not available ({e}) - trying USB/OpenCV camera")
 

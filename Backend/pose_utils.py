@@ -1,11 +1,13 @@
+from dataclasses import dataclass
 import math
 import os
+import subprocess
+import sys
 import urllib.request
+import zipfile
 
 import cv2
-import mediapipe as mp
-from mediapipe.tasks.python import BaseOptions
-from mediapipe.tasks.python import vision
+import numpy as np
 
 NOSE = 0
 LEFT_SHOULDER = 11
@@ -28,6 +30,38 @@ MODEL_URLS = {
 MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
 
 
+@dataclass
+class Landmark:
+    x: float
+    y: float
+    z: float
+    visibility: float
+
+
+def _check_mediapipe_usable() -> bool:
+    if os.getenv("FORCE_TFLITE_DNN", "").lower() in ("1", "true", "yes"):
+        return False
+    try:
+        res = subprocess.run(
+            [sys.executable, "-c", "import mediapipe as mp; from mediapipe.tasks.python import vision"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=15,
+        )
+        return res.returncode == 0
+    except Exception:
+        return False
+
+
+MP_AVAILABLE = _check_mediapipe_usable()
+if MP_AVAILABLE:
+    import mediapipe as mp
+    from mediapipe.tasks.python import BaseOptions
+    from mediapipe.tasks.python import vision
+else:
+    print("MediaPipe native binary incompatible with this CPU - using MediaPipe TFLite model via OpenCV DNN")
+
+
 def model_path(complexity: int) -> str:
     complexity = 1 if complexity >= 1 else 0
     path = os.path.join(MODEL_DIR, os.path.basename(MODEL_URLS[complexity]))
@@ -38,26 +72,55 @@ def model_path(complexity: int) -> str:
     return path
 
 
+def _tflite_model_path(complexity: int) -> str:
+    task_file = model_path(complexity)
+    tflite_file = os.path.join(MODEL_DIR, f"pose_landmarks_detector_{1 if complexity >= 1 else 0}.tflite")
+    if not os.path.exists(tflite_file):
+        with zipfile.ZipFile(task_file, "r") as zf:
+            with open(tflite_file, "wb") as out:
+                out.write(zf.read("pose_landmarks_detector.tflite"))
+    return tflite_file
+
+
 def create_landmarker(video: bool, complexity: int = 1):
-    options = vision.PoseLandmarkerOptions(
-        base_options=BaseOptions(model_asset_path=model_path(complexity)),
-        running_mode=vision.RunningMode.VIDEO if video else vision.RunningMode.IMAGE,
-        num_poses=1,
-        min_pose_detection_confidence=0.5,
-        min_pose_presence_confidence=0.5,
-        min_tracking_confidence=0.5,
-    )
-    return vision.PoseLandmarker.create_from_options(options)
+    if MP_AVAILABLE:
+        options = vision.PoseLandmarkerOptions(
+            base_options=BaseOptions(model_asset_path=model_path(complexity)),
+            running_mode=vision.RunningMode.VIDEO if video else vision.RunningMode.IMAGE,
+            num_poses=1,
+            min_pose_detection_confidence=0.5,
+            min_pose_presence_confidence=0.5,
+            min_tracking_confidence=0.5,
+        )
+        return vision.PoseLandmarker.create_from_options(options)
+    return cv2.dnn.readNetFromTFLite(_tflite_model_path(complexity))
 
 
 def detect_landmarks(landmarker, bgr_frame, timestamp_ms=None):
-    rgb = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
-    image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-    if timestamp_ms is None:
-        result = landmarker.detect(image)
-    else:
-        result = landmarker.detect_for_video(image, timestamp_ms)
-    return result.pose_landmarks[0] if result.pose_landmarks else None
+    if MP_AVAILABLE:
+        rgb = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
+        image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+        if timestamp_ms is None:
+            result = landmarker.detect(image)
+        else:
+            result = landmarker.detect_for_video(image, timestamp_ms)
+        return result.pose_landmarks[0] if result.pose_landmarks else None
+
+    blob = cv2.dnn.blobFromImage(bgr_frame, scalefactor=1.0 / 255.0, size=(256, 256), swapRB=True)
+    landmarker.setInput(blob)
+    raw, score = landmarker.forward(["Identity", "Identity_1"])
+    if float(score.flat[0]) < 0.35:
+        return None
+    pts = raw.reshape(39, 5)[:33]
+    return [
+        Landmark(
+            x=float(pts[i, 0]) / 256.0,
+            y=float(pts[i, 1]) / 256.0,
+            z=float(pts[i, 2]) / 256.0,
+            visibility=float(1.0 / (1.0 + math.exp(-max(-20.0, min(20.0, float(pts[i, 3])))))),
+        )
+        for i in range(33)
+    ]
 
 
 def visibility(landmark) -> float:
