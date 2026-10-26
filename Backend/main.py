@@ -279,10 +279,32 @@ TORSO_LANDMARKS = [
     pose_utils.RIGHT_SHOULDER,
 ]
 
-#camera instilization 
-def open_camera():
+SYSTEM_PACKAGE_DIRS = ("/usr/lib/python3/dist-packages", f"/usr/lib/python3.{sys.version_info.minor}/dist-packages")
+
+
+def _import_picamera2():
+    """picamera2 (the only way to use the ribbon camera on a Pi 5) is installed by Raspberry Pi OS as a
+    system package, which a plain .venv can't see. If the venv doesn't have it, use the system copy."""
     try:
         from picamera2 import Picamera2
+        return Picamera2
+    except ImportError:
+        if not sys.platform.startswith("linux"):
+            raise
+    added = [d for d in SYSTEM_PACKAGE_DIRS if os.path.isdir(d) and d not in sys.path]
+    sys.path.extend(added)  # appended last, so the venv's own packages still win
+    try:
+        from picamera2 import Picamera2
+        print("Loaded picamera2 from the Raspberry Pi system packages")
+        return Picamera2
+    except ImportError as e:
+        raise ImportError(f"{e} -> run: sudo apt install -y python3-picamera2  (or run setup_pi.sh)") from e
+
+
+#camera instilization
+def open_camera():
+    try:
+        Picamera2 = _import_picamera2()
         picam = Picamera2()
         cfg = picam.create_preview_configuration(
             main={"size": (640, 480), "format": "RGB888"},
@@ -300,7 +322,7 @@ def open_camera():
                 pass
         probe = threading.Thread(target=_grab_one, daemon=True)
         probe.start()
-        probe.join(timeout=3.0)
+        probe.join(timeout=6.0)  # the Pi 5 camera can take a few seconds to deliver its first frame
         if first_frame[0] is None:
             try:
                 picam.stop()
@@ -317,14 +339,16 @@ def open_camera():
                 pass
 
         print("Using Raspberry Pi camera (picamera2)")
-        return (lambda: cv2.cvtColor(picam.capture_array(), cv2.COLOR_RGB2BGR)), _close_picam
+        # picamera2's "RGB888" frames are already stored in B,G,R order - exactly what OpenCV expects
+        return picam.capture_array, _close_picam
     except Exception as e:
-        print(f"picamera2 not available ({e}) - trying USB/OpenCV camera")
+        print(f"Pi camera (picamera2) not available ({e}) - trying USB/OpenCV camera")
 
     cap = cv2.VideoCapture(int(os.getenv("CAMERA_INDEX", 0)))
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
     if not cap.isOpened():
+        print("No USB/OpenCV camera found either")
         return None, None
     cv_frame = [None]
     def _grab_cv():

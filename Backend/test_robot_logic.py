@@ -374,6 +374,44 @@ class ApiAndLoopTests(unittest.TestCase):
         self.client.post("/robot/control", json={"action": "stop"})
         self.assertEqual(self.main.robot.last_action, "stop")
 
+    def test_pi_camera_found_in_system_packages(self):
+        """Fresh .venv on a Pi 5 can't see picamera2; open_camera must load the system copy and keep BGR colors."""
+        m = self.main
+        sysdir = tempfile.mkdtemp()
+        with open(os.path.join(sysdir, "picamera2.py"), "w") as f:
+            f.write(
+                "import numpy as np\n"
+                "class Picamera2:\n"
+                "    def create_preview_configuration(self, **kw): return kw\n"
+                "    def configure(self, cfg): pass\n"
+                "    def start(self): pass\n"
+                "    def stop(self): pass\n"
+                "    def close(self): pass\n"
+                "    def capture_array(self, name='main'):\n"
+                "        a = np.zeros((480, 640, 3), np.uint8); a[..., 0] = 255; return a  # pure blue in BGR\n"
+            )
+        real_import = __import__
+
+        def venv_without_picamera2(name, *args, **kwargs):
+            if name == "picamera2" and sysdir not in sys.path:
+                raise ImportError("No module named 'picamera2'")
+            return real_import(name, *args, **kwargs)
+
+        sys.modules.pop("picamera2", None)
+        try:
+            with mock.patch.object(m, "SYSTEM_PACKAGE_DIRS", (sysdir,)), \
+                 mock.patch.object(m.sys, "platform", "linux"), \
+                 mock.patch("builtins.__import__", side_effect=venv_without_picamera2):
+                read_frame, release = m.open_camera()
+            frame = read_frame()
+            self.assertEqual(frame.shape, (480, 640, 3))
+            self.assertEqual(tuple(frame[0, 0]), (255, 0, 0))  # colors not swapped
+            release()
+        finally:
+            if sysdir in sys.path:
+                sys.path.remove(sysdir)
+            sys.modules.pop("picamera2", None)
+
     def test_manual_turn_maps_to_spin(self):
         self.client.post("/robot/control", json={"action": "left"})
         self.assertEqual(self.main.robot.last_action, "spin_left")

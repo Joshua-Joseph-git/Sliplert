@@ -158,6 +158,15 @@ When a fall is detected, the robot stops and every saved contact gets an email (
 2. Click "Simulate Fall Trajectory" to test the system
 3. The system will analyze the frame and trigger an alert if a fall is detected
 
+### Raspberry Pi Setup (also fixes a reinstalled or moved SlipLert folder)
+```bash
+cd ~/Documents/Sliplert/Backend     # wherever your copy lives
+bash setup_pi.sh
+```
+This installs the Pi camera and motor packages, rebuilds `.venv` so it can see them, installs the
+requirements, and points the auto-start service at this folder. It ends by printing the address to type
+into the dashboard.
+
 ### Test the Motors (do this first on the Pi)
 Lift the car so the wheels are off the ground, then:
 ```bash
