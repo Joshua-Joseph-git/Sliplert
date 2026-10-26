@@ -1,4 +1,10 @@
 #Start of the code for the main backend
+import os
+import sys
+
+_venv_py = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".venv", "bin", "python")
+if os.path.exists(_venv_py) and os.path.realpath(sys.executable) != os.path.realpath(_venv_py):
+    os.execv(_venv_py, [_venv_py] + sys.argv)
 
 #Imports that are going to be used listed below, rember to credit them for vid
 from fastapi import FastAPI, File, UploadFile, HTTPException, WebSocket, WebSocketDisconnect
@@ -141,14 +147,12 @@ class FallDetector:#DECTION OF FALLS CALCULATIONS OF POSITION, THIS WAS HELPED T
             # Calculate vertical alignment (shoulder to hip to ankle)
             vertical_alignment = self._calculate_vertical_alignment(shoulder_center, hip_center, ankle_center)
 
-            # Calculate body angle: use torso angle if hips are in frame, plus shoulder/head tilt when close to camera
+            # Calculate true body tilt angle (torso tilt when hips visible, or shoulder tilt when close to camera)
             torso_angle = self._calculate_body_angle(shoulder_center, hip_center) if hips_visible else 0.0
             shoulder_dx = abs(left_shoulder.x - right_shoulder.x)
             shoulder_dy = abs(left_shoulder.y - right_shoulder.y)
             shoulder_tilt = float(np.degrees(np.arctan2(shoulder_dy, max(shoulder_dx, 1e-4))))
-            head_tilt = self._calculate_body_angle({"x": nose.x, "y": nose.y}, shoulder_center)
-            drop_penalty = max(0.0, (shoulder_center["y"] - 0.55) * 140.0)
-            body_angle = float(min(90.0, max(torso_angle, shoulder_tilt * 1.35, head_tilt * 0.85, drop_penalty)))
+            body_angle = float(min(90.0, max(torso_angle, shoulder_tilt)))
 
             head_y = (nose.y + shoulder_center["y"]) / 2.0
 
@@ -172,25 +176,26 @@ class FallDetector:#DECTION OF FALLS CALCULATIONS OF POSITION, THIS WAS HELPED T
                 downward_velocity = self._calculate_downward_velocity()
                 recent_drop = head_y - min(p["y"] for p in self.previous_positions)
 
-            # Fall detection logic
+            # Fall detection logic: only flag real falls (not normal sitting or turning head)
             is_fall = False
             fall_type = None
 
-            # Check Number 1: Body or shoulders tilted past threshold (fallen sideways/horizontally)
-            if body_angle > 48 or shoulder_tilt > 35:
+            # Check Number 1: Torso tilted > 55 deg OR shoulders tipped > 45 deg sideways
+            if (hips_visible and torso_angle > 55) or (shoulder_tilt > 45 and nose.y > 0.45):
                 is_fall = True
                 fall_type = "horizontal"
+                body_angle = max(body_angle, 70.0)
 
-            # Check Number 2: Fast downward drop or collapse toward bottom of camera frame
-            elif downward_velocity > 0.45 or recent_drop > 0.20 or nose.y > 0.78 or shoulder_center["y"] > 0.82:
+            # Check Number 2: Fast downward drop (dropped > 25% of frame height quickly into lower frame)
+            elif (downward_velocity > 0.55 and recent_drop > 0.24 and head_y > 0.62) or (recent_drop > 0.32 and head_y > 0.72):
                 is_fall = True
                 fall_type = "fast_fall"
-                body_angle = max(body_angle, 72.0)
+                body_angle = max(body_angle, 75.0)
 
-            # Check NUMBER 3: Sudden change in vertical alignment
-            elif ankles_visible and len(self.previous_positions) >= 5:
+            # Check NUMBER 3: Sudden change in full-body vertical alignment
+            elif ankles_visible and hips_visible and len(self.previous_positions) >= 5:
                 recent_alignment = [p["vertical_alignment"] for p in self.previous_positions[-5:]]
-                if max(recent_alignment) - min(recent_alignment) > 0.5:
+                if max(recent_alignment) - min(recent_alignment) > 0.55 and torso_angle > 45:
                     is_fall = True
                     fall_type = "sudden_alignment_change"
 
@@ -804,6 +809,7 @@ async def control_robot(command: dict):
         return {"message": "Robot not available (GPIO not initialized)", "status": "simulation"}
 
     try:#More driving functions
+        print(f"[MOTOR] Executing manual command: {action} (GPIO_AVAILABLE={GPIO_AVAILABLE})")
         if action == "forward":
             robot.forward()
         elif action == "backward":
