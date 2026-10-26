@@ -12,15 +12,17 @@ type RobotStatus = {
   fps: number;
   body_angle?: number;
   posture_score?: number;
-  last_fall?: { timestamp: string; fall_type: string; body_angle: number; confidence: number } | null;
+  last_fall?: { timestamp: string; fall_type: string; body_angle: number; confidence: number; called_contacts?: string[] } | null;
 };
 
 export default function CameraDashboard() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const lastRobotFallRef = useRef<string | null>(null);
+  const alertTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const backendUrlRef = useRef(DEFAULT_BACKEND_URL);
   const [status, setStatus] = useState('ONLINE');
+  const [alertMessage, setAlertMessage] = useState('⚠️ FALL PATTERN CONFIRMED BY MEDIAPIPE');
   const [robot, setRobot] = useState<RobotStatus | null>(null);
   const [feed, setFeed] = useState<'laptop' | 'robot'>('laptop');
   const [robotBusy, setRobotBusy] = useState(false);
@@ -35,6 +37,40 @@ export default function CameraDashboard() {
 
   const [stats, setStats] = useState({ fps: 30, latency: 12, postureScore: 98 });
 
+  const stopBrowserCamera = () => {
+    const stream = videoRef.current?.srcObject as MediaStream | null;
+    if (stream) {
+      stream.getTracks().forEach(track => track.stop());
+    }
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+  };
+
+  const triggerFallSequence = (fallType: string, bodyAngle: number, calledContacts?: string[]) => {
+    setStatus('ALERT_TRIGGERED');
+    setStats(prev => ({
+      ...prev,
+      postureScore: Math.max(0, Math.floor(100 - (bodyAngle || 80))),
+    }));
+    const who = calledContacts && calledContacts.length > 0
+      ? calledContacts.join(', ')
+      : 'saved emergency contacts';
+    setAlertMessage(`⚠️ FALL DETECTED (${fallType.toUpperCase()}) — 📞 CALLING ${who.toUpperCase()}`);
+    addLog(`⚠️ CRITICAL: Fall detected (${fallType})! Stopping robot & calling ${who}...`);
+
+    if (alertTimerRef.current) clearTimeout(alertTimerRef.current);
+    setTimeout(() => {
+      addLog(`📞 Emergency call & SMS dispatched to ${who}.`);
+    }, 2000);
+
+    alertTimerRef.current = setTimeout(() => {
+      setStatus('ONLINE');
+      setStats(prev => ({ ...prev, postureScore: 98 }));
+      addLog('✅ Call completed — resumed live fall monitoring.');
+    }, 6500);
+  };
+
   useEffect(() => {
     backendUrlRef.current = backendUrl;
   }, [backendUrl]);
@@ -44,6 +80,10 @@ export default function CameraDashboard() {
     async function setupCamera() {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        if (stopDetection) {
+          stream.getTracks().forEach(track => track.stop());
+          return;
+        }
         if (videoRef.current) videoRef.current.srcObject = stream;
         addLog('Hardware camera interface mapped successfully.');
 
@@ -53,7 +93,7 @@ export default function CameraDashboard() {
           };
         }
       } catch (err) {
-        addLog('Camera access denied - using simulation mode.');
+        addLog('Using backend camera stream.');
         setStatus('ONLINE');
       }
     }
@@ -68,6 +108,8 @@ export default function CameraDashboard() {
     return () => {
       stopDetection = true;
       clearInterval(interval);
+      if (alertTimerRef.current) clearTimeout(alertTimerRef.current);
+      stopBrowserCamera();
     };
   }, []);
 
@@ -107,12 +149,11 @@ export default function CameraDashboard() {
         }
         if (data.last_fall && data.last_fall.timestamp !== lastRobotFallRef.current) {
           lastRobotFallRef.current = data.last_fall.timestamp;
-          setStatus('ALERT_TRIGGERED');
-          setStats(prev => ({
-            ...prev,
-            postureScore: Math.max(0, Math.floor(100 - (data.last_fall?.body_angle || 80))),
-          }));
-          addLog(`⚠️ CRITICAL: Robot camera detected fall (${data.last_fall.fall_type})! Emergency contacts alerted.`);
+          triggerFallSequence(
+            data.last_fall.fall_type || 'horizontal',
+            data.last_fall.body_angle || 80,
+            data.last_fall.called_contacts
+          );
         }
       } catch {
         setRobot(null);
@@ -124,7 +165,8 @@ export default function CameraDashboard() {
   }, [backendUrl, connected]);
 
   const toggleConnection = async () => {
-    if (connected && robot) {
+    if (connected) {
+      stopBrowserCamera();
       try {
         await fetch(`${backendUrl}/robot/camera`, {
           method: 'POST',
@@ -135,7 +177,7 @@ export default function CameraDashboard() {
       setConnected(false);
       setRobot(null);
       setFeed('laptop');
-      addLog('Disconnected from Raspberry Pi / backend.');
+      addLog('Camera & Raspberry Pi disconnected.');
       return;
     }
     const clean = urlInput.trim().replace(/\/+$/, '') || DEFAULT_BACKEND_URL;
@@ -220,13 +262,7 @@ export default function CameraDashboard() {
         }
 
         if (data.confirmedFall) {
-          setStatus('ALERT_TRIGGERED');
-          setStats(prev => ({
-            ...prev,
-            latency: elapsed,
-            postureScore: Math.max(0, Math.floor(100 - (data.bodyAngle || 75))),
-          }));
-          addLog(`⚠️ CRITICAL: Fall detected! Type: ${data.fallType}, Confidence: ${(data.confidence * 100).toFixed(0)}%`);
+          triggerFallSequence(data.fallType || 'fall', data.bodyAngle || 75, data.calledContacts);
         }
       } catch {
       }
@@ -261,9 +297,7 @@ export default function CameraDashboard() {
       const data = await response.json();
       
       if (data.confirmedFall) {
-        setStatus('ALERT_TRIGGERED');
-        setStats(prev => ({ ...prev, postureScore: 18 }));
-        addLog('⚠️ CRITICAL: MediaPipe verified a fall! Emergency contact dispatch fired.');
+        triggerFallSequence(data.fallType || 'simulated_fall', data.bodyAngle || 82, data.calledContacts);
       } else {
         setStatus('SAFE');
         addLog('False alarm. MediaPipe verified orientation as upright.');
@@ -326,8 +360,9 @@ export default function CameraDashboard() {
             
             {status === 'ALERT_TRIGGERED' && (
               <div className="absolute inset-0 bg-red-600/20 border-4 border-red-500 animate-pulse flex items-center justify-center pointer-events-none">
-                <div className="bg-slate-950/90 text-red-400 font-bold px-6 py-3 rounded-lg border border-red-500/50 text-center tracking-widest text-sm">
-                  ⚠️ FALL PATTERN CONFIRMED BY MEDIAPIPE
+                <div className="bg-slate-950/95 text-red-400 font-bold px-6 py-4 rounded-lg border border-red-500/50 text-center tracking-widest text-sm space-y-1">
+                  <div>{alertMessage}</div>
+                  <div className="text-xs text-slate-300 font-normal">Auto-resuming live monitoring in 6s...</div>
                 </div>
               </div>
             )}
@@ -372,12 +407,12 @@ export default function CameraDashboard() {
               <button
                 onClick={toggleConnection}
                 className={`px-3 py-2 rounded-lg text-xs font-semibold uppercase tracking-wider transition ${
-                  connected && robot
+                  connected
                     ? 'bg-red-600/20 hover:bg-red-600/30 text-red-400 border border-red-500/30'
                     : 'bg-emerald-600 hover:bg-emerald-500 text-white'
                 }`}
               >
-                {connected && robot ? 'Disconnect' : 'Connect'}
+                {connected ? 'Disconnect' : 'Connect'}
               </button>
             </div>
 

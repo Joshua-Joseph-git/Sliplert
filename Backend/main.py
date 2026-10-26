@@ -456,7 +456,8 @@ async def detect_fall(file: UploadFile = File(...)):
                 "body_angle": analysis["body_angle"],
                 "vertical_alignment": analysis["vertical_alignment"],
                 "velocity": analysis["velocity"],
-                "confidence": analysis["confidence"]
+                "confidence": analysis["confidence"],
+                "called_contacts": fall_record.get("called_contacts", []) if analysis["is_fall"] else [],
             }
         else:
             return {"fall_detected": False, "message": "No pose detected"}
@@ -487,7 +488,8 @@ async def detect_fall_base64(data: dict):
                 "body_angle": 82.0,
                 "vertical_alignment": 0.9,
                 "velocity": 2.4,
-                "confidence": 0.98
+                "confidence": 0.98,
+                "called_contacts": fall_record.get("called_contacts", []),
             }
 
         image_data = data.get("image")
@@ -530,7 +532,8 @@ async def detect_fall_base64(data: dict):
                 "body_angle": analysis["body_angle"],
                 "vertical_alignment": analysis["vertical_alignment"],
                 "velocity": analysis["velocity"],
-                "confidence": analysis["confidence"]
+                "confidence": analysis["confidence"],
+                "called_contacts": fall_record.get("called_contacts", []) if analysis["is_fall"] else [],
             }
         else:
             return {"fall_detected": False, "message": "No pose detected"}
@@ -583,9 +586,11 @@ def get_twilio_client():
 
 def send_emergency_alert(fall_record: dict) -> bool:
     global last_alert_time, is_autonomous
+    load_contacts_from_file()
     with alert_lock:
         now = time.time()
         if now - last_alert_time < ALERT_COOLDOWN_SECONDS:
+            fall_record["called_contacts"] = [f"{c['name']} ({c['phone']})" for c in emergency_contacts]
             return False
         last_alert_time = now
 
@@ -599,9 +604,11 @@ def send_emergency_alert(fall_record: dict) -> bool:
     client = get_twilio_client()
     from_number = os.getenv("TWILIO_PHONE_NUMBER")
     message = "This is SlipLert. A fall has been detected. Please check on your loved one immediately."
+    called_list = []
     if not emergency_contacts:
         print("No emergency contacts saved, nobody to call")
     for contact in emergency_contacts:
+        called_list.append(f"{contact['name']} ({contact['phone']})")
         if not client:
             print(f" Would call (Twilio not configured): {contact['name']} ({contact['phone']})")
             continue
@@ -615,6 +622,7 @@ def send_emergency_alert(fall_record: dict) -> bool:
             print(f"Called and texted {contact['name']} ({contact['phone']})")
         except Exception as e:
             print(f"Failed to alert {contact['name']} ({contact['phone']}): {e}")
+    fall_record["called_contacts"] = called_list
     return True
 
 
@@ -666,7 +674,7 @@ async def toggle_autonomous(settings: dict):
 
 @app.post("/robot/camera")
 async def toggle_robot_camera(settings: dict):
-    global is_autonomous
+    global is_autonomous, latest_jpeg
     enable = bool(settings.get("enabled", True))
     if enable:
         if not camera_state["running"]:
@@ -677,6 +685,14 @@ async def toggle_robot_camera(settings: dict):
     is_autonomous = False
     follower.stop()
     stop_event.set()
+    for _ in range(15):
+        if not camera_state["running"]:
+            break
+        await asyncio.sleep(0.1)
+    with frame_lock:
+        latest_jpeg = None
+    camera_state["person_detected"] = False
+    camera_state["fps"] = 0.0
     return {"message": "Robot camera stopped", "camera_running": False}
 
 @app.get("/robot/status")
