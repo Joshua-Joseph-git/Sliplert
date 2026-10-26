@@ -240,11 +240,11 @@ export default function Home() {
                   placeholder="Contact name"
                 />
                 <input
-                  type="tel"
+                  type="text"
                   value={newContact.phone}
                   onChange={(e) => setNewContact({ ...newContact, phone: e.target.value })}
                   className="w-full bg-slate-700 border border-slate-600 rounded-lg px-4 py-2 text-slate-200"
-                  placeholder="+1 (555) 123-4567"
+                  placeholder="caregiver@email.com"
                 />
                 <input
                   type="text"

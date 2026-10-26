@@ -124,7 +124,7 @@ export default function Settings() {
           <div className="bg-slate-900 border border-slate-800 rounded-xl p-6">
             <div className="flex justify-between items-center mb-6">
               <p className="text-slate-400 text-sm">
-                These contacts will be called automatically when a fall is detected.
+                These contacts will receive an instant emergency email alert when a fall is detected.
               </p>
               <button
                 onClick={() => setShowContactForm(!showContactForm)}
@@ -147,13 +147,13 @@ export default function Settings() {
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-slate-300 mb-2">Phone Number</label>
+                  <label className="block text-sm font-medium text-slate-300 mb-2">Email Address (or Phone)</label>
                   <input
-                    type="tel"
+                    type="text"
                     value={newContact.phone}
                     onChange={(e) => setNewContact({ ...newContact, phone: e.target.value })}
                     className="w-full bg-slate-700 border border-slate-600 rounded-lg px-4 py-2 text-slate-200"
-                    placeholder="+1 (555) 123-4567"
+                    placeholder="caregiver@email.com"
                   />
                 </div>
                 <div>

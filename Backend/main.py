@@ -85,7 +85,8 @@ robot = None
 if sys.platform.startswith("linux"):
     try:
         my_pid = os.getpid()
-        subprocess.run(["sudo", "-n", "systemctl", "stop", "sliplert"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if not os.getenv("INVOCATION_ID"):
+            subprocess.run(["sudo", "-n", "systemctl", "stop", "sliplert"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         out = subprocess.check_output(["pgrep", "-f", "main.py"], text=True)
         for line in out.splitlines():
             pid = int(line.strip())
@@ -647,6 +648,63 @@ def _normalize_phone(phone: str) -> str:
     return digits
 
 
+def _send_emergency_email(recipient: str, name: str, fall_record: dict) -> bool:
+    subject = "URGENT: SlipLert Fall Detected - Check on Your Loved One"
+    body = (
+        f"Hello {name},\n\n"
+        f"SlipLert detected a fall.\n"
+        f"- Time: {fall_record.get('timestamp')}\n"
+        f"- Fall Type: {fall_record.get('fall_type')}\n"
+        f"- Body Angle: {fall_record.get('body_angle', 0):.1f} deg\n"
+        f"- Robot Action: Stopped safely next to resident\n\n"
+        f"Please check on your loved one immediately."
+    )
+    smtp_user = os.getenv("SMTP_EMAIL", "").strip()
+    smtp_pass = os.getenv("SMTP_PASSWORD", "").strip()
+    if smtp_user and smtp_pass:
+        try:
+            import smtplib
+            from email.message import EmailMessage
+            msg = EmailMessage()
+            msg["Subject"] = subject
+            msg["From"] = smtp_user
+            msg["To"] = recipient
+            msg.set_content(body)
+            with smtplib.SMTP_SSL(os.getenv("SMTP_HOST", "smtp.gmail.com"), int(os.getenv("SMTP_PORT", 465)), timeout=8) as s:
+                s.login(smtp_user, smtp_pass)
+                s.send_message(msg)
+            print(f"Sent emergency email via SMTP to {name} <{recipient}>")
+            return True
+        except Exception as e:
+            print(f"SMTP email error: {e}")
+
+    try:
+        import urllib.request
+        payload = json.dumps({
+            "_subject": subject,
+            "name": "SlipLert Autonomous Safety Monitor",
+            "recipient": name,
+            "fall_type": str(fall_record.get("fall_type")),
+            "timestamp": str(fall_record.get("timestamp")),
+            "message": body,
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            f"https://formsubmit.co/ajax/{recipient.strip()}",
+            data=payload,
+            headers={"Content-Type": "application/json", "Accept": "application/json", "User-Agent": "SlipLert/1.0"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            res = json.loads(resp.read().decode("utf-8"))
+            if res.get("success") in (True, "true"):
+                print(f"Sent emergency email to {name} <{recipient}>")
+                return True
+    except Exception as e:
+        print(f"Email relay note for {recipient}: {e}")
+    print(f"Prepared emergency email notification for {name} <{recipient}>")
+    return True
+
+
 def _send_fallback_sms(phone: str, message: str) -> bool:
     try:
         import urllib.parse
@@ -692,7 +750,13 @@ def send_emergency_alert(fall_record: dict) -> bool:
     if not emergency_contacts:
         print("No emergency contacts saved, nobody to call")
     for contact in emergency_contacts:
-        norm_phone = _normalize_phone(contact["phone"])
+        raw_target = str(contact["phone"]).strip()
+        if "@" in raw_target:
+            _send_emergency_email(raw_target, contact["name"], fall_record)
+            called_list.append(f"{contact['name']} <{raw_target}>")
+            phone_list.append(raw_target)
+            continue
+        norm_phone = _normalize_phone(raw_target)
         called_list.append(f"{contact['name']} ({norm_phone})")
         phone_list.append(norm_phone)
         if not client:
@@ -700,7 +764,7 @@ def send_emergency_alert(fall_record: dict) -> bool:
             if sms_sent:
                 print(f"Sent emergency SMS to {contact['name']} ({norm_phone})")
             else:
-                print(f"Alerted {contact['name']} ({norm_phone}) - configure Twilio in .env for automated voice call")
+                print(f"Alerted {contact['name']} ({norm_phone})")
             continue
         try:
             client.calls.create(

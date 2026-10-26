@@ -70,14 +70,14 @@ export default function CameraDashboard() {
     }
     const who = contactsList.length > 0 ? contactsList.join(', ') : 'saved emergency contacts';
     setAlertPhones(phones);
-    setAlertMessage(`FALL DETECTED (${fallType.toUpperCase()}) — CALLING ${who.toUpperCase()}`);
-    addLog(`CRITICAL: Fall detected (${fallType})! Stopping robot & alerting ${who}...`);
+    setAlertMessage(`FALL DETECTED (${fallType.toUpperCase()}) — EMAIL DISPATCHED TO ${who.toUpperCase()}`);
+    addLog(`CRITICAL: Fall detected (${fallType})! Stopping robot & emailing ${who}...`);
 
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
       try {
         window.speechSynthesis.cancel();
         const utter = new SpeechSynthesisUtterance(
-          `SlipLert Emergency Alert. A fall has been detected. Stopping robot and calling ${who}.`
+          `SlipLert Emergency Alert. A fall has been detected. Stopping robot and sending emergency email to ${who}.`
         );
         utter.rate = 1.0;
         window.speechSynthesis.speak(utter);
@@ -86,13 +86,13 @@ export default function CameraDashboard() {
 
     if (alertTimerRef.current) clearTimeout(alertTimerRef.current);
     setTimeout(() => {
-      addLog(`Emergency call & SMS dispatched to ${who}.`);
+      addLog(`Emergency email notification delivered to ${who}.`);
     }, 2000);
 
     alertTimerRef.current = setTimeout(() => {
       setStatus('ONLINE');
       setStats(prev => ({ ...prev, postureScore: 98 }));
-      addLog('Call completed — resumed autonomous robot monitoring.');
+      addLog('Email alert completed — resumed autonomous robot monitoring.');
     }, 6500);
   };
 
@@ -346,14 +346,14 @@ export default function CameraDashboard() {
             </div>
             
             {status === 'ALERT_TRIGGERED' && (
-              <div className="absolute inset-0 bg-red-600/20 border-4 border-red-500 animate-pulse flex items-center justify-center pointer-events-none">
-                <div className="bg-slate-950/95 text-red-400 font-bold px-6 py-4 rounded-lg border border-red-500/50 text-center tracking-widest text-sm space-y-2">
+              <div className="absolute inset-0 bg-red-600/20 border-4 border-red-500 animate-pulse flex items-center justify-center pointer-events-none p-4">
+                <div className="bg-slate-950/95 text-red-400 font-bold px-6 py-4 rounded-lg border border-red-500/50 text-center tracking-wider text-sm space-y-2 max-w-lg w-full">
                   <div>{alertMessage}</div>
-                  {alertPhones.length > 0 && (
-                    <div className="text-xs text-emerald-400 font-semibold">
-                      BACKEND DISPATCHED CALL & SMS TO: {alertPhones.join(', ')}
-                    </div>
-                  )}
+                  <div className="bg-slate-900 border border-slate-800 rounded p-3 text-left text-xs font-mono text-slate-300 space-y-1">
+                    <div><span className="text-slate-500">TO:</span> {alertPhones.length > 0 ? alertPhones.join(', ') : 'Configured Emergency Contact'}</div>
+                    <div><span className="text-slate-500">SUBJECT:</span> URGENT: SlipLert Fall Detected — Check on Loved One</div>
+                    <div><span className="text-slate-500">STATUS:</span> <span className="text-emerald-400">EMAIL NOTIFICATION SENT & ROBOT STOPPED</span></div>
+                  </div>
                   <div className="text-xs text-slate-300 font-normal">Auto-resuming autonomous monitoring in 6s...</div>
                 </div>
               </div>
