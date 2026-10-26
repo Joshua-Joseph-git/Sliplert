@@ -696,20 +696,21 @@ async def trigger_emergency_alert(fall_record: dict):
 async def control_robot(command: dict):
     """Control the robot"""
     action = command.get("action")
-    speed = command.get("speed", 50)
+    speed = command.get("speed", 100)
 
     if not robot:
         return {"message": "Robot not available (GPIO not initialized)", "status": "simulation"}
 
     try:#More driving functions
+        motor_speed = min(1.0, max(0.8, speed / 100))
         if action == "forward":
-            robot.forward(speed=speed/100)
+            robot.forward(speed=motor_speed)
         elif action == "backward":
-            robot.backward(speed=speed/100)
+            robot.backward(speed=motor_speed)
         elif action == "left":
-            robot.left(speed=speed/100)
+            robot.left(speed=motor_speed)
         elif action == "right":
-            robot.right(speed=speed/100)
+            robot.right(speed=motor_speed)
         elif action == "stop":
             robot.stop()
         else:

@@ -2,8 +2,7 @@
 import { useRef, useEffect, useState } from 'react';
 import Link from 'next/link';
 
-const DEFAULT_BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
-const LOCAL_CAMERA_URL = 'http://localhost:8000';
+const DEFAULT_BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || '';
 
 type RobotStatus = {
   autonomous: boolean;
@@ -34,8 +33,7 @@ export default function CameraDashboard() {
   const [robotBusy, setRobotBusy] = useState(false);
   const [backendUrl, setBackendUrl] = useState(DEFAULT_BACKEND_URL);
   const [urlInput, setUrlInput] = useState(DEFAULT_BACKEND_URL);
-  const [connected, setConnected] = useState(true);
-  const [activeStreamUrl, setActiveStreamUrl] = useState(LOCAL_CAMERA_URL);
+  const [connected, setConnected] = useState(false);
   const [streamKey, setStreamKey] = useState(0);
   const [systemLog, setSystemLog] = useState<string[]>([
     'System initialized.',
@@ -93,76 +91,49 @@ export default function CameraDashboard() {
 
   useEffect(() => {
     const saved = window.localStorage.getItem('sliplert_backend_url');
-    if (saved) {
+    if (saved && !saved.includes('localhost')) {
       setBackendUrl(saved);
       setUrlInput(saved);
+      setConnected(true);
     }
-    setConnected(true);
     return () => {
       if (alertTimerRef.current) clearTimeout(alertTimerRef.current);
     };
   }, []);
 
   useEffect(() => {
-    if (!connected) {
+    if (!connected || !backendUrl) {
       setRobot(null);
       return;
     }
     const checkRobot = async () => {
       const t0 = performance.now();
-      const target = backendUrl || LOCAL_CAMERA_URL;
       try {
-        const response = await fetch(`${target}/robot/status`, { signal: AbortSignal.timeout(2000) });
-        if (response.ok) {
-          const elapsed = Math.max(1, Math.round(performance.now() - t0));
-          const data: RobotStatus = await response.json();
-          if (data.camera_running) {
-            setActiveStreamUrl(target);
-            setRobot(data);
-            setStats(prev => ({
-              fps: data.fps,
-              latency: elapsed,
-              postureScore: typeof data.posture_score === 'number' ? data.posture_score : prev.postureScore,
-            }));
-            if (data.last_fall && data.last_fall.timestamp !== lastRobotFallRef.current) {
-              lastRobotFallRef.current = data.last_fall.timestamp;
-              triggerFallSequence(
-                data.last_fall.fall_type || 'horizontal',
-                data.last_fall.body_angle || 80,
-                data.last_fall.called_contacts,
-                data.last_fall.called_phones
-              );
-            }
-            return;
-          }
-        }
-      } catch {}
-
-      try {
-        const localRes = await fetch(`${LOCAL_CAMERA_URL}/robot/status`, { signal: AbortSignal.timeout(2000) });
-        if (localRes.ok) {
-          const elapsed = Math.max(1, Math.round(performance.now() - t0));
-          const localData: RobotStatus = await localRes.json();
-          setActiveStreamUrl(LOCAL_CAMERA_URL);
-          setRobot(localData);
-          setStats(prev => ({
-            fps: localData.camera_running ? localData.fps : 0,
-            latency: elapsed,
-            postureScore: typeof localData.posture_score === 'number' ? localData.posture_score : prev.postureScore,
-          }));
-          if (localData.last_fall && localData.last_fall.timestamp !== lastRobotFallRef.current) {
-            lastRobotFallRef.current = localData.last_fall.timestamp;
-            triggerFallSequence(
-              localData.last_fall.fall_type || 'horizontal',
-              localData.last_fall.body_angle || 80,
-              localData.last_fall.called_contacts,
-              localData.last_fall.called_phones
-            );
-          }
+        const response = await fetch(`${backendUrl}/robot/status`, { signal: AbortSignal.timeout(2500) });
+        if (!response.ok) {
+          setRobot(null);
           return;
         }
-      } catch {}
-      setRobot(null);
+        const elapsed = Math.max(1, Math.round(performance.now() - t0));
+        const data: RobotStatus = await response.json();
+        setRobot(data);
+        setStats(prev => ({
+          fps: data.camera_running ? data.fps : 0,
+          latency: elapsed,
+          postureScore: typeof data.posture_score === 'number' ? data.posture_score : prev.postureScore,
+        }));
+        if (data.last_fall && data.last_fall.timestamp !== lastRobotFallRef.current) {
+          lastRobotFallRef.current = data.last_fall.timestamp;
+          triggerFallSequence(
+            data.last_fall.fall_type || 'horizontal',
+            data.last_fall.body_angle || 80,
+            data.last_fall.called_contacts,
+            data.last_fall.called_phones
+          );
+        }
+      } catch {
+        setRobot(null);
+      }
     };
     checkRobot();
     const poll = setInterval(checkRobot, 1000);
@@ -171,10 +142,9 @@ export default function CameraDashboard() {
 
   const toggleConnection = async () => {
     if (connected) {
-      for (const url of [backendUrl, LOCAL_CAMERA_URL]) {
-        if (!url) continue;
+      if (backendUrl) {
         try {
-          await fetch(`${url}/robot/camera`, {
+          await fetch(`${backendUrl}/robot/camera`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ enabled: false }),
@@ -184,31 +154,42 @@ export default function CameraDashboard() {
       setConnected(false);
       setRobot(null);
       setStats(prev => ({ ...prev, fps: 0 }));
-      addLog('Disconnected camera & robot monitoring.');
+      addLog('Disconnected from Raspberry Pi robot car.');
       return;
     }
-    const clean = urlInput.trim().replace(/\/+$/, '') || LOCAL_CAMERA_URL;
+    const clean = urlInput.trim().replace(/\/+$/, '');
+    if (!clean) {
+      addLog('Please enter your Raspberry Pi IP address first.');
+      return;
+    }
     const finalUrl = clean.startsWith('http') ? clean : `http://${clean}${clean.includes(':') ? '' : ':8000'}`;
     setBackendUrl(finalUrl);
     setUrlInput(finalUrl);
     window.localStorage.setItem('sliplert_backend_url', finalUrl);
     setConnected(true);
     setStreamKey(prev => prev + 1);
-    for (const url of [finalUrl, LOCAL_CAMERA_URL]) {
-      try {
-        await fetch(`${url}/robot/camera`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ enabled: true }),
-        });
-        await fetch(`${url}/robot/autonomous`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ enabled: true }),
-        });
-      } catch {}
+    try {
+      await fetch(`${finalUrl}/robot/camera`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: true }),
+      });
+      await fetch(`${finalUrl}/robot/autonomous`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: true }),
+      });
+      const res = await fetch(`${finalUrl}/robot/status`, { signal: AbortSignal.timeout(3000) });
+      if (res.ok) {
+        const data = await res.json();
+        setRobot(data);
+        addLog(`Connected to robot car at ${finalUrl} — full motor power & autonomous mode active.`);
+      } else {
+        addLog(`Could not reach ${finalUrl}.`);
+      }
+    } catch {
+      addLog(`Could not reach ${finalUrl} — check that python main.py is running on the Pi.`);
     }
-    addLog(`Connected — direct MediaPipe fall detection & autonomous mode active.`);
   };
 
   const toggleFollowing = async () => {
@@ -236,7 +217,7 @@ export default function CameraDashboard() {
       const response = await fetch(`${backendUrl}/robot/control`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action, speed: 55 }),
+        body: JSON.stringify({ action, speed: 100 }),
       });
       const data = await response.json();
       addLog(`Motor test: ${action.toUpperCase()} (${data.status || 'sent'}).`);
@@ -312,8 +293,8 @@ export default function CameraDashboard() {
           <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-2xl relative group aspect-video flex items-center justify-center">
             {connected && robot?.camera_running ? (
               <img
-                key={`${activeStreamUrl}-${streamKey}`}
-                src={`${activeStreamUrl}/video_feed?t=${streamKey}`}
+                key={`${backendUrl}-${streamKey}`}
+                src={`${backendUrl}/video_feed?t=${streamKey}`}
                 alt="Robot car camera perspective"
                 className="w-full h-full object-cover"
               />

@@ -39,8 +39,8 @@ class AutonomousController:
         self.target_distance = float(os.getenv("FOLLOW_TARGET_CM", 120))  # cm - the distance we want for the person so they don't collide
         self.min_distance = float(os.getenv("FOLLOW_MIN_CM", 60))  # cm - minimum safe distance
         self.max_distance = 400  # cm - maximum distance to track
-        self.follow_speed = float(os.getenv("FOLLOW_SPEED", 0.5))  # Speed 
-        self.turn_speed = float(os.getenv("TURN_SPEED", 0.35))  # Speed when turing
+        self.follow_speed = float(os.getenv("FOLLOW_SPEED", 1.0))  # Full speed so motors don't stall/buzz
+        self.turn_speed = float(os.getenv("TURN_SPEED", 1.0))  # Full power when turning
         self.is_running = False
         self.person_position = None  # (x, y, z) in camera coordinates
         self.last_person_position = None
@@ -230,26 +230,27 @@ class AutonomousController:
 
         if action == "forward":
             turn = commands.get("turn", 0)
-            self.robot.forward(
-                speed=commands.get("speed", self.follow_speed),
-                curve_left=min(turn * 2, 1) if turn > 0 else 0,
-                curve_right=min(-turn * 2, 1) if turn < 0 else 0
-            )
+            if turn > 0:
+                self.robot.left(speed=1.0)
+            elif turn < 0:
+                self.robot.right(speed=1.0)
+            else:
+                self.robot.forward(speed=1.0)
         elif action == "backward":#DRIVING FUNCTIONS AND SPEED COORDINATED WITH THAT
-            self.robot.backward(speed=commands.get("speed", self.follow_speed * 0.5))
+            self.robot.backward(speed=1.0)
         elif action == "left":
-            self.robot.left(speed=commands.get("speed", self.turn_speed))
+            self.robot.left(speed=1.0)
         elif action == "right":
-            self.robot.right(speed=commands.get("speed", self.turn_speed))
+            self.robot.right(speed=1.0)
         elif action == "stop":
             self.robot.stop()
         elif action == "adjust":
             # Adjust direction while maintaining position
             turn = commands.get("turn", 0)
             if turn > 0:
-                self.robot.left(speed=turn)
+                self.robot.left(speed=1.0)
             elif turn < 0:
-                self.robot.right(speed=abs(turn))
+                self.robot.right(speed=1.0)
             else:
                 self.robot.stop()
 
