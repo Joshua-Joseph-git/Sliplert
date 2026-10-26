@@ -33,12 +33,10 @@ try:
 except ImportError:
     pass
 
-try:
-    from gpiozero import Robot, Motor
-    GPIO_AVAILABLE = True
-except ImportError:
-    GPIO_AVAILABLE = False
-    print("GPIO not available - running in simulation mode")
+import autonomous_controller
+from autonomous_controller import AutonomousController, MotorDriver
+
+ON_PI = autonomous_controller.GPIO_AVAILABLE
 
 try:
     from twilio.rest import Client as TwilioClient
@@ -54,14 +52,13 @@ stop_event = threading.Event()
 async def lifespan(app):
     load_contacts_from_file()
     load_fall_history_from_file()
-    if os.getenv("ROBOT_CAMERA", "on" if GPIO_AVAILABLE else "off").lower() == "on":
+    if os.getenv("ROBOT_CAMERA", "on" if ON_PI else "off").lower() == "on":
         threading.Thread(target=robot_camera_loop, daemon=True).start()
     else:
         print("Robot camera loop off (set ROBOT_CAMERA=on to enable)")
     yield
     stop_event.set()
-    if robot:
-        robot.stop()
+    robot.stop()
 
 #The app title of the backend 
 app = FastAPI(title="SlipLert Backend", lifespan=lifespan)
@@ -83,11 +80,11 @@ emergency_contacts = []
 fall_history = []
 robot_position = {"x": 0, "y": 0, "angle": 0}
 camera = None
-is_autonomous = True
-CONTACTS_FILE = "emergency_contacts.json"
-FALL_HISTORY_FILE = "fall_history.json"
-
-robot = None
+is_autonomous = os.getenv("AUTONOMOUS_ON_START", "on").lower() == "on"
+autonomous_epoch = 0  # bumped whenever the user takes control, cancels a pending auto-resume
+BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
+CONTACTS_FILE = os.path.join(BACKEND_DIR, "emergency_contacts.json")
+FALL_HISTORY_FILE = os.path.join(BACKEND_DIR, "fall_history.json")
 
 if sys.platform.startswith("linux"):
     try:
@@ -103,23 +100,9 @@ if sys.platform.startswith("linux"):
     except Exception:
         pass
 
-if GPIO_AVAILABLE:
-
-    lf, lb = int(os.getenv("ROBOT_LEFT_FORWARD_PIN", 17)), int(os.getenv("ROBOT_LEFT_BACKWARD_PIN", 18))
-    rf, rb = int(os.getenv("ROBOT_RIGHT_FORWARD_PIN", 22)), int(os.getenv("ROBOT_RIGHT_BACKWARD_PIN", 23))
-    try:
-        robot = Robot(left=Motor(lf, lb, pwm=False), right=Motor(rf, rb, pwm=False))
-        print("Robot GPIO initialized")
-    except TypeError:
-        try:
-            robot = Robot(left=(lf, lb), right=(rf, rb), pwm=False)
-            print("Robot GPIO initialized")
-        except Exception as e:
-            print(f"Robot GPIO initialization failed (not on Raspberry Pi): {e}")
-            GPIO_AVAILABLE = False
-    except Exception as e:
-        print(f"Robot GPIO initialization failed (not on Raspberry Pi): {e}")
-        GPIO_AVAILABLE = False
+# Motors: all wiring/polarity settings live in MotorDriver (see autonomous_controller.py and .env)
+robot = MotorDriver()
+GPIO_AVAILABLE = robot.available
 
 
 
@@ -147,8 +130,14 @@ class FallDetector:#DECTION OF FALLS CALCULATIONS OF POSITION, THIS WAS HELPED T
             hip_center = self._get_midpoint(left_hip, right_hip)
             ankle_center = self._get_midpoint(left_ankle, right_ankle)
 
-            hips_visible = pose_utils.visibility(left_hip) > 0.45 and pose_utils.visibility(right_hip) > 0.45
+            shoulders_visible = pose_utils.visibility(left_shoulder) > 0.3 and pose_utils.visibility(right_shoulder) > 0.3
+            hips_visible = shoulders_visible and pose_utils.visibility(left_hip) > 0.45 and pose_utils.visibility(right_hip) > 0.45
             ankles_visible = pose_utils.visibility(left_ankle) > 0.45 and pose_utils.visibility(right_ankle) > 0.45
+            if not shoulders_visible:
+                # Low-confidence shoulder points are guesses; their angles/heights would cause false alarms
+                self.previous_positions.clear()
+                return {"is_fall": False, "fall_type": None, "body_angle": 0.0,
+                        "vertical_alignment": 0.0, "velocity": 0.0, "confidence": 0.0}
 
             # Calculate vertical alignment (shoulder to hip to ankle)
             vertical_alignment = self._calculate_vertical_alignment(shoulder_center, hip_center, ankle_center)
@@ -267,10 +256,10 @@ class FallDetector:#DECTION OF FALLS CALCULATIONS OF POSITION, THIS WAS HELPED T
 
 fall_detector = FallDetector()
 
-from autonomous_controller import AutonomousController
-
 follower = AutonomousController(robot=robot, create_hardware=False)
-camera_state = {"running": False, "person_detected": False, "fps": 0.0, "body_angle": 0.0, "posture_score": 98, "last_fall": None}
+if is_autonomous:
+    follower.start()
+camera_state = {"running": False, "person_detected": False, "fps": 0.0, "body_angle": 0.0, "posture_score": 98, "last_fall": None, "error": None}
 latest_jpeg = None
 frame_lock = threading.Lock()
 camera_loop_lock = threading.Lock()
@@ -351,24 +340,27 @@ def open_camera():
 #the camera constantly is running and checking for the condtiions and if it is connected
 def robot_camera_loop():
     global latest_jpeg
-    if not camera_loop_lock.acquire(blocking=False):
+    if not camera_loop_lock.acquire(timeout=3.0):  # wait for a stopping loop to release the camera
         return
     try:
         read_frame, release = open_camera()
+        while not read_frame and not stop_event.is_set():
+            # Never drive without eyes: keep the motors stopped and retry the camera
+            camera_state["error"] = "No camera frames - check the ribbon cable / USB camera. Retrying every 5s."
+            print(camera_state["error"])
+            robot.stop()
+            stop_event.wait(5.0)
+            if not stop_event.is_set():
+                read_frame, release = open_camera()
         if not read_frame:
-            print("No camera frames available - running autonomous motor loop without camera")
-            while not stop_event.is_set():
-                if is_autonomous and robot:
-                    robot.backward()
-                time.sleep(0.1)
             return
+        camera_state["error"] = None
 
         loop_pose = pose_utils.create_landmarker(video=True, complexity=int(os.getenv("POSE_MODEL_COMPLEXITY", 0)))
         loop_detector = FallDetector()
         timestamp_ms = 0
         confirm_frames = int(os.getenv("FALL_CONFIRM_FRAMES", 3))
         fall_streak = 0
-        lost_frames = 0
         last_tick = time.time()
         camera_state["running"] = True
         print("Robot camera loop running")
@@ -377,20 +369,19 @@ def robot_camera_loop():
             while not stop_event.is_set():
                 frame = read_frame()
                 if frame is None:
-                    if is_autonomous:
-                        follower.is_running = True
-                        follower.search_last_direction()
+                    follower.lose_person()
                     time.sleep(0.05)
                     continue
 
                 timestamp_ms = max(timestamp_ms + 1, int(time.monotonic() * 1000))
                 landmarks = pose_utils.detect_landmarks(loop_pose, frame, timestamp_ms)
                 visible = landmarks is not None and any(pose_utils.visibility(landmarks[i]) > 0.18 for i in TORSO_LANDMARKS)
-                camera_state["person_detected"] = visible
+                body_visible = landmarks is not None and follower.has_body(landmarks)
+                camera_state["person_detected"] = visible or body_visible
                 camera_state["running"] = True
 
+                fall_confirmed = False
                 if visible:
-                    lost_frames = 0
                     analysis = loop_detector.analyze_pose(landmarks)
                     angle = float(analysis.get("body_angle", 0.0))
                     camera_state["body_angle"] = round(angle, 1)
@@ -398,6 +389,7 @@ def robot_camera_loop():
                     fall_streak = fall_streak + 1 if analysis.get("is_fall") else 0
                     if fall_streak >= confirm_frames:
                         fall_streak = 0
+                        fall_confirmed = True
                         record = {
                             "timestamp": datetime.now().isoformat(),
                             "fall_type": analysis["fall_type"],
@@ -405,16 +397,22 @@ def robot_camera_loop():
                             "confidence": analysis["confidence"],
                             "source": "robot_camera"
                         }#CHECKS FOR FALL IF SO THERE IS AN ALERT
-                        camera_state["last_fall"] = record
+                        # Only a fall that actually sent an alert is shown on the dashboard
+                        # (during the cooldown the person is still on the floor; don't spam "email sent")
                         if send_emergency_alert(record):
+                            camera_state["last_fall"] = record
                             fall_history.append(record)
                             save_fall_history_to_file()
-                    elif is_autonomous:
-                        follower.is_running = True
-                        follower.follow_landmarks(landmarks)
-                elif is_autonomous:
+                else:
+                    fall_streak = 0
+
+                if is_autonomous and not fall_confirmed:
                     follower.is_running = True
-                    follower.search_last_direction()
+                    if body_visible:
+                        follower.follow_landmarks(landmarks)
+                    else:
+                        follower.search_last_direction()
+                camera_state["follow_state"] = follower.state if is_autonomous else "paused"
 
                 if landmarks:
                     pose_utils.draw_landmarks(frame, landmarks)
@@ -507,11 +505,10 @@ async def detect_fall(file: UploadFile = File(...)):
                     "body_angle": analysis["body_angle"],
                     "confidence": analysis["confidence"]
                 }
-                fall_history.append(fall_record)
-                save_fall_history_to_file()
-
-                # Trigger emergency alert
-                await trigger_emergency_alert(fall_record)
+                # Trigger emergency alert (one record per alert, not one per frame during the cooldown)
+                if await trigger_emergency_alert(fall_record):
+                    fall_history.append(fall_record)
+                    save_fall_history_to_file()
 
             return {
                 "fall_detected": analysis["is_fall"],
@@ -536,11 +533,11 @@ async def detect_fall_base64(data: dict):
         incoming_contacts = data.get("contacts")
         if isinstance(incoming_contacts, list) and len(incoming_contacts) > 0:
             load_contacts_from_file()
-            existing_phones = {_normalize_phone(c.get("phone", "")) for c in emergency_contacts}
+            existing_phones = {_contact_key(c.get("phone", "")) for c in emergency_contacts}
             added_any = False
             for c in incoming_contacts:
                 if isinstance(c, dict) and c.get("name") and c.get("phone"):
-                    p = _normalize_phone(c["phone"])
+                    p = _contact_key(c["phone"])
                     if p not in existing_phones:
                         emergency_contacts.append({
                             "id": max((x["id"] for x in emergency_contacts), default=0) + 1,
@@ -561,13 +558,15 @@ async def detect_fall_base64(data: dict):
                 "body_angle": 82.0,
                 "confidence": 0.98
             }
-            camera_state["last_fall"] = fall_record
             camera_state["body_angle"] = 82.0
             camera_state["posture_score"] = 18
             fall_history.append(fall_record)
+            # A test button press always sends, even inside the normal alert cooldown
+            await trigger_emergency_alert(fall_record, force=True)
+            camera_state["last_fall"] = fall_record
             save_fall_history_to_file()
-            await trigger_emergency_alert(fall_record)
             return {
+                "timestamp": fall_record["timestamp"],
                 "fall_detected": True,
                 "fall_type": "simulated_fall",
                 "body_angle": 82.0,
@@ -576,6 +575,7 @@ async def detect_fall_base64(data: dict):
                 "confidence": 0.98,
                 "called_contacts": fall_record.get("called_contacts", []),
                 "called_phones": fall_record.get("called_phones", []),
+                "delivery": fall_record.get("delivery", []),
             }
 
         image_data = data.get("image")
@@ -608,9 +608,9 @@ async def detect_fall_base64(data: dict):
                     "body_angle": analysis["body_angle"],
                     "confidence": analysis["confidence"]
                 }
-                fall_history.append(fall_record)
-                save_fall_history_to_file()
-                await trigger_emergency_alert(fall_record)
+                if await trigger_emergency_alert(fall_record):
+                    fall_history.append(fall_record)
+                    save_fall_history_to_file()
 
             return {
                 "fall_detected": analysis["is_fall"],
@@ -638,6 +638,11 @@ async def add_emergency_contact(contact: dict):
         if field not in contact:
             raise HTTPException(status_code=400, detail=f"Missing required field: {field}")
 
+    load_contacts_from_file()
+    contact["phone"] = str(contact["phone"]).strip()
+    for existing in emergency_contacts:
+        if _contact_key(existing.get("phone", "")) == _contact_key(contact["phone"]):
+            return {"message": "Contact already saved", "contact": existing}
     contact["id"] = max((c["id"] for c in emergency_contacts), default=0) + 1
     contact["created_at"] = datetime.now().isoformat()
     emergency_contacts.append(contact)
@@ -654,6 +659,7 @@ async def get_emergency_contacts():
 async def delete_emergency_contact(contact_id: int):
     """Delete an emergency contact"""
     global emergency_contacts
+    load_contacts_from_file()
     emergency_contacts = [c for c in emergency_contacts if c["id"] != contact_id]
     save_contacts_to_file()
     return {"message": "Contact deleted successfully"}
@@ -683,6 +689,12 @@ def _normalize_phone(phone: str) -> str:
     return digits
 
 
+def _contact_key(target: str) -> str:
+    """Same person/address no matter how it was typed (emails ignore case, phones ignore formatting)."""
+    target = str(target).strip()
+    return target.lower() if "@" in target else _normalize_phone(target)
+
+
 def _lookup_mx_hosts(domain: str) -> list:
     """Look up MX records for a domain; auto-installs dnspython if needed."""
     try:
@@ -702,7 +714,9 @@ def _lookup_mx_hosts(domain: str) -> list:
 
 
 def _send_direct_mx_email(recipient: str, subject: str, body: str) -> bool:
-    """Deliver mail straight to the recipient's mail server — no account or activation needed."""
+    """Deliver mail straight to the recipient's mail server — no account or activation needed.
+    NOTE: many home internet providers block port 25, and Gmail/Outlook often reject or spam-folder
+    mail from a home IP. Set SMTP_EMAIL + SMTP_PASSWORD in .env for reliable delivery."""
     import smtplib
     from email.message import EmailMessage
     domain = recipient.split("@")[-1].strip().lower()
@@ -721,12 +735,16 @@ def _send_direct_mx_email(recipient: str, subject: str, body: str) -> bool:
         mx_hosts = [guesses[domain]] if domain in guesses else [f"mail.{domain}", domain]
     msg = EmailMessage()
     msg["Subject"] = subject
-    msg["From"] = "alerts@sliplert.local"
+    msg["From"] = os.getenv("ALERT_FROM_EMAIL", "alerts@sliplert.local")
     msg["To"] = recipient
     msg.set_content(body)
     for host in mx_hosts[:3]:
         try:
             with smtplib.SMTP(host, 25, timeout=8) as s:
+                s.ehlo()
+                if s.has_extn("starttls"):
+                    s.starttls()
+                    s.ehlo()
                 s.send_message(msg)
             print(f"Emergency email delivered directly to {recipient} via {host}")
             return True
@@ -735,7 +753,8 @@ def _send_direct_mx_email(recipient: str, subject: str, body: str) -> bool:
     return False
 
 
-def _send_emergency_email(recipient: str, name: str, fall_record: dict) -> bool:
+def _send_emergency_email(recipient: str, name: str, fall_record: dict):
+    """Returns (delivered, method, error)."""
     subject = "URGENT: SlipLert Fall Detected"
     body = (
         f"Hello {name},\n\n"
@@ -746,8 +765,9 @@ def _send_emergency_email(recipient: str, name: str, fall_record: dict) -> bool:
         f"- Robot: stopped safely next to them\n\n"
         f"- SlipLert Autonomous Safety Monitor"
     )
+    errors = []
     smtp_user = os.getenv("SMTP_EMAIL", "").strip()
-    smtp_pass = os.getenv("SMTP_PASSWORD", "").strip()
+    smtp_pass = os.getenv("SMTP_PASSWORD", "").strip().replace(" ", "")
     if smtp_user and smtp_pass:
         try:
             import smtplib
@@ -757,16 +777,26 @@ def _send_emergency_email(recipient: str, name: str, fall_record: dict) -> bool:
             msg["From"] = smtp_user
             msg["To"] = recipient
             msg.set_content(body)
-            with smtplib.SMTP_SSL(os.getenv("SMTP_HOST", "smtp.gmail.com"), int(os.getenv("SMTP_PORT", 465)), timeout=8) as s:
-                s.login(smtp_user, smtp_pass)
-                s.send_message(msg)
+            host = os.getenv("SMTP_HOST", "smtp.gmail.com")
+            port = int(os.getenv("SMTP_PORT", 465))
+            if port == 587:
+                with smtplib.SMTP(host, port, timeout=10) as s:
+                    s.starttls()
+                    s.login(smtp_user, smtp_pass)
+                    s.send_message(msg)
+            else:
+                with smtplib.SMTP_SSL(host, port, timeout=10) as s:
+                    s.login(smtp_user, smtp_pass)
+                    s.send_message(msg)
             print(f"Sent emergency email via SMTP to {name} <{recipient}>")
-            return True
+            return True, "smtp", None
         except Exception as e:
             print(f"SMTP email error: {e}")
+            errors.append(f"SMTP: {e}")
 
     if _send_direct_mx_email(recipient, subject, body):
-        return True
+        return True, "direct_mx", None
+    errors.append("direct MX delivery failed (port 25 blocked or rejected)")
 
     try:
         import urllib.request
@@ -787,12 +817,13 @@ def _send_emergency_email(recipient: str, name: str, fall_record: dict) -> bool:
         with urllib.request.urlopen(req, timeout=8) as resp:
             res = json.loads(resp.read().decode("utf-8"))
             if res.get("success") in (True, "true"):
-                print(f"Sent emergency email to {name} <{recipient}>")
-                return True
+                print(f"Sent emergency email to {name} <{recipient}> via FormSubmit")
+                return True, "formsubmit", None
+            errors.append(f"FormSubmit: {res.get('message', res)}")
     except Exception as e:
-        print(f"Email relay note for {recipient}: {e}")
-    print(f"Prepared emergency email notification for {name} <{recipient}>")
-    return True
+        errors.append(f"FormSubmit: {e}")
+    print(f"EMAIL NOT DELIVERED to {name} <{recipient}>: {'; '.join(errors)}")
+    return False, "none", "; ".join(errors)
 
 
 def _send_fallback_sms(phone: str, message: str) -> bool:
@@ -813,14 +844,45 @@ def _send_fallback_sms(phone: str, message: str) -> bool:
         return False
 
 
-def send_emergency_alert(fall_record: dict) -> bool:
+def _deliver_alerts(fall_record: dict, contacts: list):
+    """Runs in a background thread so the camera loop (and the robot) never freeze while emails send.
+    Results land in fall_record["delivery"], which the dashboard reads from /robot/status."""
+    client = get_twilio_client()
+    from_number = os.getenv("TWILIO_PHONE_NUMBER")
+    message = "SlipLert Emergency Alert: A fall has been detected. Please check on your loved one immediately."
+    for entry, contact in zip(fall_record["delivery"], contacts):
+        target = entry["to"]
+        try:
+            if "@" in target:
+                ok, method, err = _send_emergency_email(target, contact["name"], fall_record)
+            elif client:
+                client.calls.create(
+                    to=target,
+                    from_=from_number,
+                    twiml=f'<Response><Say loop="2">{message}</Say></Response>'
+                )
+                client.messages.create(to=target, from_=from_number, body=f"{message} Time: {fall_record['timestamp']}")
+                print(f"Called and texted {contact['name']} ({target})")
+                ok, method, err = True, "twilio", None
+            else:
+                ok = _send_fallback_sms(target, f"{message} Time: {fall_record['timestamp']}")
+                method = "textbelt"
+                err = None if ok else "free SMS quota used up - add an email contact or Twilio keys"
+                print(f"{'Sent' if ok else 'FAILED to send'} emergency SMS to {contact['name']} ({target})")
+        except Exception as e:
+            ok, method, err = False, "error", str(e)
+            print(f"Failed to alert {contact['name']} ({target}): {e}")
+        entry.update({"status": "sent" if ok else "failed", "method": method, "error": err})
+    save_fall_history_to_file()
+
+
+def send_emergency_alert(fall_record: dict, force: bool = False) -> bool:
     global last_alert_time, is_autonomous
     load_contacts_from_file()
+    contacts = list(emergency_contacts)
     with alert_lock:
         now = time.time()
-        if now - last_alert_time < ALERT_COOLDOWN_SECONDS:
-            fall_record["called_contacts"] = [f"{c['name']} ({c['phone']})" for c in emergency_contacts]
-            fall_record["called_phones"] = [_normalize_phone(c["phone"]) for c in emergency_contacts]
+        if not force and now - last_alert_time < ALERT_COOLDOWN_SECONDS:
             return False
         last_alert_time = now
 
@@ -831,125 +893,100 @@ def send_emergency_alert(fall_record: dict) -> bool:
     was_autonomous = is_autonomous
     is_autonomous = False
     follower.stop()
-#prints if a fall occured 
-    client = get_twilio_client()
-    from_number = os.getenv("TWILIO_PHONE_NUMBER")
-    message = "SlipLert Emergency Alert: A fall has been detected. Please check on your loved one immediately."
-    called_list = []
-    phone_list = []
-    if not emergency_contacts:
-        print("No emergency contacts saved, nobody to call")
-    for contact in emergency_contacts:
+#prints if a fall occured
+    targets = []
+    for contact in contacts:
         raw_target = str(contact["phone"]).strip()
-        if "@" in raw_target:
-            _send_emergency_email(raw_target, contact["name"], fall_record)
-            called_list.append(f"{contact['name']} <{raw_target}>")
-            phone_list.append(raw_target)
-            continue
-        norm_phone = _normalize_phone(raw_target)
-        called_list.append(f"{contact['name']} ({norm_phone})")
-        phone_list.append(norm_phone)
-        if not client:
-            sms_sent = _send_fallback_sms(norm_phone, f"{message} Time: {fall_record['timestamp']}")
-            if sms_sent:
-                print(f"Sent emergency SMS to {contact['name']} ({norm_phone})")
-            else:
-                print(f"Alerted {contact['name']} ({norm_phone})")
-            continue
-        try:
-            client.calls.create(
-                to=norm_phone,
-                from_=from_number,
-                twiml=f'<Response><Say loop="2">{message}</Say></Response>'
-            )
-            client.messages.create(to=norm_phone, from_=from_number, body=f"{message} Time: {fall_record['timestamp']}")
-            print(f"Called and texted {contact['name']} ({norm_phone})")
-        except Exception as e:
-            print(f"Failed to alert {contact['name']} ({norm_phone}): {e}")
-    fall_record["called_contacts"] = called_list
-    fall_record["called_phones"] = phone_list
+        targets.append(raw_target if "@" in raw_target else _normalize_phone(raw_target))
+    fall_record["called_contacts"] = [
+        f"{c['name']} <{t}>" if "@" in t else f"{c['name']} ({t})" for c, t in zip(contacts, targets)
+    ]
+    fall_record["called_phones"] = targets
+    fall_record["delivery"] = [{"name": c["name"], "to": t, "status": "sending"} for c, t in zip(contacts, targets)]
+    if not contacts:
+        print("No emergency contacts saved, nobody to call")
+    threading.Thread(target=_deliver_alerts, args=(fall_record, contacts), daemon=True).start()
 
     if was_autonomous:
+        epoch = autonomous_epoch
         def _resume_autonomous():
             global is_autonomous
             time.sleep(7.0)
-            is_autonomous = True
-            print("Resumed autonomous following after emergency dispatch")
+            if autonomous_epoch == epoch:  # user did not take manual control in the meantime
+                is_autonomous = True
+                follower.start()
+                print("Resumed autonomous following after emergency dispatch")
         threading.Thread(target=_resume_autonomous, daemon=True).start()
 
     return True
 
 
-async def trigger_emergency_alert(fall_record: dict):
+async def trigger_emergency_alert(fall_record: dict, force: bool = False) -> bool:
     """Trigger emergency alert - call all contacts"""
-    await asyncio.to_thread(send_emergency_alert, fall_record)
+    return await asyncio.to_thread(send_emergency_alert, fall_record, force)
 
 # Robot Control...
 
+MANUAL_ACTIONS = {"forward": "forward", "backward": "backward", "left": "spin_left", "right": "spin_right", "stop": "stop"}
+
+
+def _start_camera_loop():
+    if not camera_state["running"]:
+        stop_event.clear()
+        threading.Thread(target=robot_camera_loop, daemon=True).start()
+
+
 @app.post("/robot/control")
 async def control_robot(command: dict):
-    """Control the robot"""
-    global is_autonomous
+    """Manual drive. Each command auto-stops after `duration` seconds (default 0.6) unless it is
+    sent again, so the dashboard re-sends while a button is held and the car stops when released."""
+    global is_autonomous, autonomous_epoch
     action = command.get("action")
+    if action not in MANUAL_ACTIONS:
+        raise HTTPException(status_code=400, detail="Invalid action")
 
     is_autonomous = False
+    autonomous_epoch += 1
     follower.is_running = False
 
-    if not robot:
-        return {"message": "Robot not available (GPIO not initialized)", "status": "simulation"}
-
-    try:#More driving functions
-        print(f"[MOTOR] Executing manual command: {action} (GPIO_AVAILABLE={GPIO_AVAILABLE})")
-        if action == "forward":
-            robot.forward()
-        elif action == "backward":
-            robot.backward()
-        elif action == "left":
-            robot.left()
-        elif action == "right":
-            robot.right()
-        elif action == "stop":
-            robot.stop()
-        else:
-            raise HTTPException(status_code=400, detail="Invalid action")
-
-        return {"message": f"Robot {action} executed", "status": "success"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    try:
+        duration = min(5.0, max(0.1, float(command.get("duration", 0.6))))
+    except (TypeError, ValueError):
+        duration = 0.6
+    robot.drive(MANUAL_ACTIONS[action], duration)
+    if not robot.available:
+        return {"message": f"Robot not available: {robot.error}", "status": "simulation"}
+    print(f"[MOTOR] Manual command: {action} for {duration:.1f}s")
+    return {"message": f"Robot {action} executed", "status": "success"}
 
 @app.post("/robot/autonomous")
 async def toggle_autonomous(settings: dict):
     """Toggle autonomous mode"""
-    global is_autonomous
+    global is_autonomous, autonomous_epoch
     is_autonomous = bool(settings.get("enabled", False))
+    autonomous_epoch += 1
     if is_autonomous:
-        follower.is_running = True
-        if robot:
-            robot.backward()
-        if not camera_state["running"]:
-            stop_event.clear()
-            threading.Thread(target=robot_camera_loop, daemon=True).start()
+        # Don't move yet - the camera loop starts driving once it actually sees the person
+        follower.start()
+        _start_camera_loop()
     else:
         follower.stop()
-        if robot:
-            robot.stop()
     message = f"Autonomous mode {'enabled' if is_autonomous else 'disabled'}"
     return {"message": message, "status": is_autonomous}
 
 @app.post("/robot/camera")
 async def toggle_robot_camera(settings: dict):
-    global is_autonomous, latest_jpeg
+    global is_autonomous, latest_jpeg, autonomous_epoch
     enable = bool(settings.get("enabled", True))
+    autonomous_epoch += 1
     if enable:
-        is_autonomous = True
-        follower.is_running = True
-        if robot:
-            robot.backward()
+        if settings.get("autonomous", True):
+            is_autonomous = True
+            follower.start()
         if not camera_state["running"]:
-            stop_event.clear()
-            threading.Thread(target=robot_camera_loop, daemon=True).start()
+            _start_camera_loop()
             await asyncio.sleep(0.6)
-        return {"message": "Robot camera and autonomous following started", "camera_running": camera_state["running"], "autonomous": is_autonomous}
+        return {"message": "Robot camera started", "camera_running": camera_state["running"], "autonomous": is_autonomous}
     is_autonomous = False
     follower.stop()
     stop_event.set()
@@ -969,8 +1006,12 @@ async def get_robot_status():
     return {
         "position": robot_position,
         "autonomous": is_autonomous,
-        "gpio_available": GPIO_AVAILABLE,
+        "gpio_available": robot.available,
+        "motor_error": robot.error,
+        "motor_action": robot.last_action,
+        "follow_state": follower.state if is_autonomous else "paused",
         "camera_running": camera_state["running"],
+        "camera_error": camera_state["error"],
         "person_detected": camera_state["person_detected"],
         "person_position": follower.get_person_position(),
         "fps": camera_state["fps"],
@@ -978,6 +1019,7 @@ async def get_robot_status():
         "posture_score": camera_state["posture_score"],
         "last_fall": camera_state["last_fall"],
         "twilio_configured": get_twilio_client() is not None,
+        "smtp_configured": bool(os.getenv("SMTP_EMAIL", "").strip() and os.getenv("SMTP_PASSWORD", "").strip()),
         "contacts_count": len(emergency_contacts)
     }
 

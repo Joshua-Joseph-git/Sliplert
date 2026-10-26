@@ -149,7 +149,7 @@ The system uses multiple criteria to detect falls:
    - Relationship
 4. Click "Add Contact"
 
-When a fall is detected, the system will automatically call all configured contacts.
+When a fall is detected, the robot stops and every saved contact gets an email (or a text/call for phone numbers when Twilio is configured).
 
 ## Testing
 
@@ -158,14 +158,38 @@ When a fall is detected, the system will automatically call all configured conta
 2. Click "Simulate Fall Trajectory" to test the system
 3. The system will analyze the frame and trigger an alert if a fall is detected
 
-### Test Robot Control
+### Test the Motors (do this first on the Pi)
+Lift the car so the wheels are off the ground, then:
 ```bash
-# Move forward
-curl -X POST http://localhost:8000/robot/control -H "Content-Type: application/json" -d '{"action": "forward", "speed": 50}'
-
-# Stop
-curl -X POST http://localhost:8000/robot/control -H "Content-Type: application/json" -d '{"action": "stop"}'
+cd ~/Sliplert/Backend
+sudo systemctl stop sliplert        # frees the GPIO pins
+.venv/bin/python motor_test.py      # runs each wheel/turn and tells you which .env flag to flip
+sudo systemctl start sliplert
 ```
+If it prints `Motors are NOT working`, the message says why (missing GPIO driver -> `sudo apt install python3-lgpio`,
+pins in use, etc.). The dashboard shows the same message in a yellow box under Robot Car Control.
+
+### Test Robot Control
+Each command drives for `duration` seconds and then stops by itself (the dashboard re-sends it while a button is held):
+```bash
+curl -X POST http://PI_IP:8000/robot/control -H "Content-Type: application/json" -d '{"action": "forward", "duration": 1.0}'
+curl -X POST http://PI_IP:8000/robot/control -H "Content-Type: application/json" -d '{"action": "stop"}'
+```
+
+### Automatic Checks
+```bash
+cd Backend
+python -m unittest test_robot_logic -v   # motors (fake pins), steering, search, pose geometry, API, alerts
+```
+
+### Reliable Alert Emails
+Put a Gmail address and a Gmail **App Password** in `Backend/.env` (`SMTP_EMAIL`, `SMTP_PASSWORD`, see `.env.example`).
+Without them the Pi tries direct delivery on port 25, which most home internet providers block. The dashboard's
+Email Outbox shows DELIVERED or FAILED (with the reason) for every contact.
+
+### Open the Dashboard Over http://
+Run the frontend with `npm run dev` and open `http://localhost:3000` on a computer on the same Wi-Fi as the Pi.
+A page served over https:// (for example a Vercel deployment) cannot talk to the Pi's `http://` address.
 
 ## Deployment
 

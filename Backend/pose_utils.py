@@ -164,9 +164,19 @@ def _movenet_kpts_to_33(kpts: np.ndarray):
 
 
 def _run_movenet_raw(sess, bgr_frame: np.ndarray) -> np.ndarray:
+    # MoveNet wants a square image: pad (letterbox) instead of squashing 640x480 into 192x192,
+    # then map the keypoints back so they are fractions of the original frame.
+    h, w = bgr_frame.shape[:2]
+    side = max(h, w)
+    y_off, x_off = (side - h) // 2, (side - w) // 2
+    square = np.zeros((side, side, 3), dtype=np.uint8)
+    square[y_off:y_off + h, x_off:x_off + w] = bgr_frame
     in_name = sess.get_inputs()[0].name
-    rgb = cv2.cvtColor(cv2.resize(bgr_frame, (192, 192)), cv2.COLOR_BGR2RGB).astype(np.int32)[None, ...]
-    return sess.run(None, {in_name: rgb})[0][0, 0]
+    rgb = cv2.cvtColor(cv2.resize(square, (192, 192)), cv2.COLOR_BGR2RGB).astype(np.int32)[None, ...]
+    kpts = sess.run(None, {in_name: rgb})[0][0, 0].copy()
+    kpts[:, 0] = (kpts[:, 0] * side - y_off) / h
+    kpts[:, 1] = (kpts[:, 1] * side - x_off) / w
+    return kpts
 
 
 def _pose_score(lms) -> float:
@@ -212,8 +222,9 @@ def detect_landmarks(landmarker, bgr_frame, timestamp_ms=None):
         # Flat-on-the-floor 90-degree rotation check when person lies completely horizontal
         if best_score < 0.40:
             for rot_code, unmap in [
-                (cv2.ROTATE_90_COUNTERCLOCKWISE, lambda y, x: (1.0 - x, y)),
-                (cv2.ROTATE_90_CLOCKWISE, lambda y, x: (x, 1.0 - y)),
+                # unmap: (y, x) in the rotated image -> (y, x) in the original frame
+                (cv2.ROTATE_90_COUNTERCLOCKWISE, lambda y, x: (x, 1.0 - y)),
+                (cv2.ROTATE_90_CLOCKWISE, lambda y, x: (1.0 - x, y)),
             ]:
                 rot_lms = _mp_detect_single(landmarker, cv2.rotate(bgr_frame, rot_code))
                 rs = _pose_score(rot_lms)
@@ -245,8 +256,9 @@ def detect_landmarks(landmarker, bgr_frame, timestamp_ms=None):
     # 2) 90-degree rotated pass so the Pi detects a person lying completely flat on the floor
     if best_score < 0.38:
         for rot_code, unmap in [
-            (cv2.ROTATE_90_COUNTERCLOCKWISE, lambda y, x: (1.0 - x, y)),
-            (cv2.ROTATE_90_CLOCKWISE, lambda y, x: (x, 1.0 - y)),
+            # unmap: (y, x) in the rotated image -> (y, x) in the original frame
+            (cv2.ROTATE_90_COUNTERCLOCKWISE, lambda y, x: (x, 1.0 - y)),
+            (cv2.ROTATE_90_CLOCKWISE, lambda y, x: (1.0 - x, y)),
         ]:
             rk = _run_movenet_raw(landmarker, cv2.rotate(bgr_frame, rot_code))
             rs = float(max(rk[0, 2], (rk[5, 2] + rk[6, 2]) / 2.0))
